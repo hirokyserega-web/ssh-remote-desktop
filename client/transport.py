@@ -130,8 +130,8 @@ class Transport:
         opts = self._connect_options()
         async with asyncssh.connect(self.cfg.host, self.cfg.port, **opts) as conn:
             self._conn = conn
-            stdin, stdout, stderr = await conn.open_session(encoding=None)
-            stream = AsyncByteStream(stdout, stdin)
+            reader, writer = await conn.open_session(encoding=None)
+            stream = AsyncByteStream(writer, reader)
             self.mux = Multiplexer(stream, name="cli")
             self.mux.on(Channel.VIDEO, self._h_video)
             self.mux.on(Channel.CONTROL, self._h_control)

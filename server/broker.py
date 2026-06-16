@@ -60,6 +60,11 @@ class _SSHServer(asyncssh.SSHServer if asyncssh else object):
         return self.broker.cfg.allow_password
 
     def validate_password(self, username, password):
+        validator = getattr(self.broker, "password_validator", None)
+        if validator is not None:
+            if username in validator:
+                return validator[username] == password
+            return False
         ok = check_password(username, password)
         log.info("password auth for %s: %s", username, "ok" if ok else "denied")
         return ok
@@ -85,6 +90,9 @@ class _SSHServer(asyncssh.SSHServer if asyncssh else object):
 
 
 class Broker:
+    # Test hook: when set, replaces PAM password check. Maps username -> password.
+    password_validator: dict[str, str] | None = None
+
     def __init__(self, cfg):
         if asyncssh is None:  # pragma: no cover
             raise RuntimeError(f"asyncssh is required: {_IMPORT_ERROR}")
