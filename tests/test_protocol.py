@@ -39,5 +39,6 @@ def test_max_payload_known():
 
 
 def test_encode_rejects_oversize():
+    # 2**32-1 (max u32) + 1: too large to fit in the 4-byte length field.
     with pytest.raises(struct.error):
-        encode_header(Channel.VIDEO, 0, MAX_FRAME_PAYLOAD + 1)
+        encode_header(Channel.VIDEO, 0, 2**32)

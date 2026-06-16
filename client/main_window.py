@@ -18,14 +18,13 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt, Signal, QObject, QTimer
-from PySide6.QtGui import QAction, QImage, QKeySequence, QGuiApplication
+from PySide6.QtCore import Signal, QObject, QTimer
+from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
-    QMainWindow, QToolBar, QStatusBar, QMessageBox, QMenu, QApplication,
+    QMainWindow, QToolBar, QStatusBar, QMessageBox, QMenu,
 )
 
 from common import messages
-from common.protocol import Flags
 from .transport import Transport
 from .decoder import Decoder
 from .desktop_view import DesktopView

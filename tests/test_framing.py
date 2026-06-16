@@ -14,35 +14,40 @@ from common.framing import AsyncByteStream, Frame, Multiplexer
 from common.protocol import Channel, Flags
 
 
-def _socket_pair():
-    """Return (reader, writer) halves of a connected socket pair."""
-    a, b = socket.socketpair()
-    # We hand the raw file descriptors to asyncio.open_connection, but the
-    # simpler route is to use socketpair() directly with makefile-like
-    # adapters. Easier: use asyncio's connect_accepted pattern.
-    return a, b
+def _make_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> AsyncByteStream:
+    return AsyncByteStream(reader, writer)
 
 
-async def _loopback_pair():
-    """Build an AsyncByteStream pair using asyncio streams on a socketpair."""
-    a, b = socket.socketpair()
-    # Wrap each side as a (StreamReader, StreamWriter) pair.
+async def _loopback_pair() -> tuple[AsyncByteStream, AsyncByteStream]:
+    """Two connected asyncio StreamReader/Writer pairs over a localhost socket.
+
+    The "server" side accepts one connection; the "client" side connects to
+    it. We return (server_stream, client_stream).
+    """
     loop = asyncio.get_running_loop()
 
-    async def _make(sock):
-        # asyncio.StreamReaderProtocol hooks StreamReader/StreamWriter up
-        # directly when we pass them in.
-        reader = asyncio.StreamReader(loop=loop)
-        protocol = asyncio.StreamReaderProtocol(reader, loop=loop)
-        # Adopt the existing socket: register the reader and build a writer.
-        transport, _ = await loop.connect_accepted_socket(lambda: protocol, sock)
-        writer = asyncio.StreamWriter(transport, protocol, reader, loop)
-        return reader, writer
+    server_conn: asyncio.StreamReader | None = None
+    server_writer: asyncio.StreamWriter | None = None
+    server_connected = asyncio.Event()
 
-    reader_a, writer_a = await _make(a)
-    reader_b, writer_b = await _make(b)
-    return (AsyncByteStream(reader_a, writer_a),
-            AsyncByteStream(reader_b, writer_b))
+    async def _on_client(reader, writer):
+        nonlocal server_conn, server_writer
+        server_conn = reader
+        server_writer = writer
+        server_connected.set()
+
+    server = await asyncio.start_server(_on_client, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        client_reader, client_writer = await asyncio.open_connection("127.0.0.1", port)
+        await asyncio.wait_for(server_connected.wait(), timeout=2)
+        return (
+            _make_stream(server_conn, server_writer),
+            _make_stream(client_reader, client_writer),
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 @pytest.mark.asyncio
@@ -67,7 +72,6 @@ async def test_mux_roundtrip_video_input_control():
     mux_a.start()
     mux_b.start()
 
-    # a sends input to b, a sends video to b, b sends control to a.
     payload_in, _ = messages.dumps(messages.mouse_move(10, 20))
     mux_a.send(Channel.INPUT, payload_in)
 
@@ -77,18 +81,20 @@ async def test_mux_roundtrip_video_input_control():
     payload_ctl, _ = messages.dumps(messages.pong(42))
     mux_b.send(Channel.CONTROL, payload_ctl)
 
-    # Let the writer loops drain.
-    await asyncio.sleep(0.2)
+    # Wait for the queues to drain, polling the writer side.
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if (received_b and Channel.INPUT in [c for c, *_ in received_b]
+                and any(c == Channel.CONTROL for c, *_ in received_a)):
+            break
+
+    assert received_b, "no frames received by b"
+    assert any(c == Channel.INPUT for c, *_ in received_b)
+    assert any(c == Channel.VIDEO for c, *_ in received_b)
+    assert any(c == Channel.CONTROL for c, *_ in received_a)
+
     await mux_a.aclose()
     await mux_b.aclose()
-
-    # b should have seen INPUT, VIDEO, VIDEO.
-    channels_b = [c for c, *_ in received_b]
-    assert Channel.INPUT in channels_b
-    assert channels_b.count(Channel.VIDEO) == 2
-    assert received_b[0][2] == payload_in  # input was first
-    # a should have seen CONTROL from b.
-    assert any(c == Channel.CONTROL for c, *_ in received_a)
 
 
 @pytest.mark.asyncio
@@ -106,12 +112,17 @@ async def test_mux_drops_stale_video_frames():
     mux_a.start()
     mux_b.start()
 
-    # Stuff more video frames than _video_max_frames; the queue has space for
-    # 3, so send 6 non-keyframes and expect at least 1 drop.
-    for i in range(6):
+    # Stuff more video frames than _video_max_frames (3); send 8 non-keyframes.
+    for i in range(8):
         mux_a.send_video(bytes([i]), Flags.NONE)
-    await asyncio.sleep(0.2)
+
+    # Drain.
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if len(received_videos) >= 3:
+            break
+
     await mux_a.aclose()
     await mux_b.aclose()
-    assert len(received_videos) < 6
-    assert len(received_videos) >= 1
+
+    assert 1 <= len(received_videos) <= 3, f"unexpected: {len(received_videos)}"

@@ -127,7 +127,6 @@ class FilesDialog(QDialog):
 
     # -- transfers ---------------------------------------------------------
     def _remote_path(self, name: str) -> str:
-        shared = os.path.expanduser(self.cfg.local_shared_dir)  # not used server-side
         return f"{self._cwd.rstrip('/')}/{name}".lstrip("/")
 
     def _progress_cb(self, sent, total):

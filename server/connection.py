@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 from common import messages
 from common.framing import AsyncByteStream, Frame, Multiplexer

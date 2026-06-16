@@ -38,7 +38,6 @@ try:
 except Exception:  # pragma: no cover
     _HAVE_PIL = False
 
-from common.protocol import Flags
 
 
 class BaseDecoder:

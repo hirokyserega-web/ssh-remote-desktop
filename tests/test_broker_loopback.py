@@ -56,9 +56,8 @@ async def test_handshake_and_video_roundtrip(tmp_path):
     # Patch the server's session start to be a no-op (we only want the channel
     # handshake here; full session bring-up is exercised in a heavier test).
     from server import session as session_mod
-    original_start = session_mod.Session.start
 
-    async def fake_acquire(self, user, *, geometry, persistent):
+    def fake_acquire(self, user, *, geometry, persistent):
         # Build a session object the connection handler can use without spawning
         # any display server. We give it a tiny dummy backend via a stand-in.
         from server.session import Session
@@ -123,8 +122,8 @@ async def test_handshake_and_video_roundtrip(tmp_path):
             cfg.host, cfg.port, username="root", password="secret",  # noqa: S107
             known_hosts=None, client_keys=None,
         ) as conn:
-            channel, reader, writer = await conn.open_session(encoding=None)
-            stream = AsyncByteStream(reader, writer)
+            stdin, stdout, _stderr = await conn.open_session(encoding=None)
+            stream = AsyncByteStream(stdout, stdin)
 
             got_session = asyncio.Event()
             got_video = asyncio.Event()
@@ -178,4 +177,3 @@ async def test_handshake_and_video_roundtrip(tmp_path):
             await server_task
         except (asyncio.CancelledError, Exception):
             pass
-        session_mod.Session.start = original_start

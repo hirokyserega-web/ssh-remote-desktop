@@ -24,7 +24,6 @@ from __future__ import annotations
 import io
 import logging
 import struct
-from typing import Iterable
 
 from .backend.base import CursorImage, Frame
 

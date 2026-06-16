@@ -1,6 +1,5 @@
 """File jail: must confine every path under the configured root."""
 
-import os
 from pathlib import Path
 
 import pytest

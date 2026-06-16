@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Callable
 
 log = logging.getLogger("rd.client.files")

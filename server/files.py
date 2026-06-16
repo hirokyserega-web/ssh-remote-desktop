@@ -11,7 +11,6 @@ server filesystem.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 log = logging.getLogger("rd.files")
@@ -34,8 +33,10 @@ class FileJail:
         Rejects absolute escapes and ``..`` traversal that would leave the
         jail. Returns an absolute :class:`Path` guaranteed to be inside root.
         """
-        rel = (rel or "").lstrip("/")
-        candidate = (self.root / rel).resolve()
+        raw = rel or ""
+        if Path(raw).is_absolute():
+            raise JailError(f"absolute paths are not allowed: {rel!r}")
+        candidate = (self.root / raw).resolve()
         try:
             candidate.relative_to(self.root)
         except ValueError:

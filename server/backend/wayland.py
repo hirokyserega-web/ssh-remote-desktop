@@ -25,11 +25,9 @@ uinput + wl-clipboard. This keeps the same capture/encode pipeline as X11.
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
-import time
 
-from .base import CursorImage, DisplayBackend, Frame
+from .base import DisplayBackend, Frame
 from ..keymap import keysym_to_evdev
 
 log = logging.getLogger("rd.backend.wayland")

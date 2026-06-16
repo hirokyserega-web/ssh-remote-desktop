@@ -12,7 +12,7 @@ import os
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QPlainTextEdit, QFileDialog, QMessageBox,
-    QCheckBox, QSpinBox,
+    QSpinBox,
 )
 from PySide6.QtGui import QGuiApplication
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-import time
 
 from .base import CursorImage, DisplayBackend, Frame
 from ..keymap import keysym_to_x11
@@ -27,7 +26,7 @@ log = logging.getLogger("rd.backend.x11")
 
 # Optional Xlib import -- kept soft so the module imports on non-X11 build hosts.
 try:
-    from Xlib import X, display as xdisplay, XK
+    from Xlib import X, display as xdisplay
     from Xlib.ext import xtest
 
     _HAVE_XLIB = True

@@ -1,6 +1,5 @@
 """Config loading: defaults, file overrides, and CLI overrides."""
 
-import os
 from pathlib import Path
 
 from common.config import load_client_config, load_server_config

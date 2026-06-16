@@ -19,14 +19,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
 from typing import Callable
 
 import asyncssh
 
 from common import messages
 from common.framing import AsyncByteStream, Frame, Multiplexer
-from common.protocol import Channel, Flags, PROTO_VERSION
+from common.protocol import Channel, PROTO_VERSION
 
 log = logging.getLogger("rd.client.transport")
 
@@ -130,8 +129,8 @@ class Transport:
         opts = self._connect_options()
         async with asyncssh.connect(self.cfg.host, self.cfg.port, **opts) as conn:
             self._conn = conn
-            reader, writer = await conn.open_session(encoding=None)
-            stream = AsyncByteStream(writer, reader)
+            stdin, stdout, _stderr = await conn.open_session(encoding=None)
+            stream = AsyncByteStream(stdout, stdin)
             self.mux = Multiplexer(stream, name="cli")
             self.mux.on(Channel.VIDEO, self._h_video)
             self.mux.on(Channel.CONTROL, self._h_control)

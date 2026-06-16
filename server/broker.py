@@ -21,8 +21,6 @@ import asyncio
 import logging
 import os
 import threading
-import time
-from pathlib import Path
 
 try:
     import asyncssh
@@ -190,6 +188,7 @@ class Broker:
             process_factory=self._handle_session,
             sftp_factory=self._make_sftp_factory() if self.cfg.files_enabled else None,
             allow_scp=False,
+            encoding=None,
         )
         self._reaper_task = asyncio.create_task(self._reaper())
         log.info("broker listening on %s:%d", self.cfg.host, self.cfg.port)

@@ -28,10 +28,9 @@ import shutil
 import signal
 import socket
 import subprocess
-import threading
 import time
 
-from .backend import create_backend, detect_backend_kind
+from .backend import create_backend
 
 log = logging.getLogger("rd.session")
 
