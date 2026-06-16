@@ -109,6 +109,10 @@ sudo -E .venv/bin/python -m server --port 2222
 
 ## Установка
 
+### В одну строку
+
+Самый быстрый путь — установщики в `scripts/`. Они сами ставят системные з
+
 ```bash
 git clone https://github.com/hirokyserega-web/ssh-remote-desktop.git
 cd ssh-remote-desktop
