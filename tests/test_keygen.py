@@ -2,6 +2,7 @@
 permissions."""
 
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,8 +21,9 @@ def test_ed25519_unencrypted(tmp_path):
     assert kp.public_openssh.endswith("test@host")
     priv, pub = write_keypair(kp, tmp_path, basename="id_test", overwrite=True)
     assert priv.exists() and pub.exists()
-    # Private key must be 0600.
-    assert stat.S_IMODE(priv.stat().st_mode) == 0o600
+    # Private key must be 0600 (POSIX only; Windows ignores chmod).
+    if sys.platform != "win32":
+        assert stat.S_IMODE(priv.stat().st_mode) == 0o600
     # Load it back without passphrase and confirm we get the same public key.
     reloaded = load_private_key(priv)
     reloaded_pub = reloaded.public_key().public_bytes(

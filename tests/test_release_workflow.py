@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,13 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 RELEASE_SH = ROOT / "scripts" / "release.sh"
+
+# Bash-script tests are Linux/macOS only: the Windows CI runner has no bash in
+# PATH (the `bash` shim routes to WSL, which has no installed distribution).
+skip_no_bash = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="release.sh is a bash script (no bash on Windows CI)",
+)
 
 
 # ---------- release.yml ----------
@@ -61,22 +69,26 @@ def test_release_validates_with_actionlint():
 
 # ---------- release.sh helper ----------
 
+@skip_no_bash
 def test_release_sh_exists_and_executable():
     assert RELEASE_SH.exists()
     assert os.access(RELEASE_SH, os.X_OK), "release.sh should be chmod +x"
 
 
+@skip_no_bash
 def test_release_sh_syntax_ok():
     r = subprocess.run(["bash", "-n", str(RELEASE_SH)], capture_output=True, text=True)
     assert r.returncode == 0, f"bash -n: {r.stderr}"
 
 
+@skip_no_bash
 def test_release_sh_requires_version_arg():
     r = subprocess.run(["bash", str(RELEASE_SH)], capture_output=True, text=True)
     assert r.returncode != 0
     assert "usage" in (r.stdout + r.stderr).lower()
 
 
+@skip_no_bash
 def test_release_sh_rejects_bad_version_format():
     r = subprocess.run(
         ["bash", str(RELEASE_SH), "not-a-version"],
@@ -85,6 +97,7 @@ def test_release_sh_rejects_bad_version_format():
     assert r.returncode != 0
 
 
+@skip_no_bash
 def test_release_sh_accepts_valid_version(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -107,6 +120,7 @@ def test_release_sh_accepts_valid_version(tmp_path):
     assert r.returncode == 0, f"dry-run failed:\n{r.stdout}\n{r.stderr}"
 
 
+@skip_no_bash
 def test_release_sh_rejects_non_semver_with_v_prefix_only(tmp_path):
     # v1.2.3 should be normalized to 1.2.3 and accepted in dry-run.
     repo = tmp_path / "repo"

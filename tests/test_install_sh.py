@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -10,8 +11,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 INSTALL = os.path.join(ROOT, "scripts", "install.sh")
 
 pytestmark = pytest.mark.skipif(
-    not os.path.exists(INSTALL),
-    reason="install.sh not present",
+    not os.path.exists(INSTALL) or sys.platform == "win32",
+    reason="install.sh is a Linux/macOS shell script (no bash on Windows CI)",
 )
 
 
