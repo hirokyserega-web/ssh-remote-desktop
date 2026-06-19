@@ -6,6 +6,7 @@ set -euo pipefail
 python -m nuitka \
   --standalone \
   --onefile \
+  --assume-yes-for-downloads \
   --enable-plugin=pyside6 \
   --output-dir=dist \
   --output-filename=rd-client \

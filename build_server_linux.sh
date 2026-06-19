@@ -6,6 +6,7 @@ set -euo pipefail
 python -m nuitka \
   --standalone \
   --onefile \
+  --assume-yes-for-downloads \
   --output-dir=dist \
   --output-filename=rd-server \
   server/__main__.py

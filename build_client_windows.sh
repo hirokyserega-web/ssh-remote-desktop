@@ -7,8 +7,9 @@ set -euo pipefail
 python -m nuitka \
   --standalone \
   --onefile \
+  --assume-yes-for-downloads \
   --enable-plugin=pyside6 \
-  --windows-disable-console \
+  --windows-console-mode=disable \
   --output-dir=dist \
   --output-filename=rd-client.exe \
   client/__main__.py

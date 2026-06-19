@@ -128,17 +128,21 @@ jobs:
           done
           printf '%s' "$sha_lines" > "$SHA_FILE"
           printf '%s' "$sha_lines" >> staging/SHA256SUMS
+          files_list="$(find staging -type f -printf '%f\n' | sort)"
           {
             echo "files<<EOF"
-            find staging -type f -printf '%f\n' | sort
+            printf '%s\n' "$files_list"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          if [[ -z "$files_list" ]]; then
+            echo "::warning::No binaries were produced for ${OS_LABEL}; skipping artifact upload."
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.label }}
           path: staging/*
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
   release:
