@@ -19,7 +19,7 @@ class ConnectDialog(QDialog):
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
         self.cfg = cfg
-        self.setWindowTitle("Подключение")
+        self.setWindowTitle(self.tr("Подключение"))
         self.resize(460, 420)
         self._password: str | None = None
 
@@ -32,21 +32,21 @@ class ConnectDialog(QDialog):
         self.host.lineEdit().setText(cfg.host)
         for h in self._load_recent_hosts():
             self.host.addItem(h)
-        form.addRow("Хост:", self.host)
+        form.addRow(self.tr("Хост:"), self.host)
 
         self.port = QSpinBox()
         self.port.setRange(1, 65535)
         self.port.setValue(cfg.port)
-        form.addRow("Порт:", self.port)
+        form.addRow(self.tr("Порт:"), self.port)
 
         self.user = QLineEdit(cfg.user)
-        form.addRow("Пользователь:", self.user)
+        form.addRow(self.tr("Пользователь:"), self.user)
 
         self.auth = QComboBox()
         self.auth.addItems(["key", "password", "agent"])
         self.auth.setCurrentText(cfg.auth)
         self.auth.currentTextChanged.connect(self._auth_changed)
-        form.addRow("Аутентификация:", self.auth)
+        form.addRow(self.tr("Аутентификация:"), self.auth)
 
         key_row = QHBoxLayout()
         self.key_path = QLineEdit(cfg.key_path)
@@ -55,39 +55,44 @@ class ConnectDialog(QDialog):
         browse.clicked.connect(self._browse_key)
         key_row.addWidget(self.key_path)
         key_row.addWidget(browse)
-        self.key_row_label = QLabel("Приватный ключ:")
+        self.key_row_label = QLabel(self.tr("Приватный ключ:"))
         form.addRow(self.key_row_label, key_row)
 
         self.secret = QLineEdit()
         self.secret.setEchoMode(QLineEdit.Password)
-        self.secret_label = QLabel("Пароль / passphrase:")
+        self.secret_label = QLabel(self.tr("Пароль / passphrase:"))
         form.addRow(self.secret_label, self.secret)
 
         self.codec = QComboBox()
         self.codec.addItems(["h264", "jpeg"])
         self.codec.setCurrentText(cfg.codec)
-        form.addRow("Кодек:", self.codec)
+        form.addRow(self.tr("Кодек:"), self.codec)
 
         self.geometry = QLineEdit(f"{cfg.geometry[0]}x{cfg.geometry[1]}")
-        form.addRow("Разрешение сессии:", self.geometry)
+        form.addRow(self.tr("Разрешение сессии:"), self.geometry)
+        self.geometry.textEdited.connect(self._validate_geometry)
 
-        self.persistent = QCheckBox("Сохранять сессию для переподключения")
+        self.persistent = QCheckBox(self.tr("Сохранять сессию для переподключения"))
         self.persistent.setChecked(cfg.persistent)
         form.addRow("", self.persistent)
 
-        self.fullscreen = QCheckBox("Запустить в полноэкранном режиме")
+        self.fullscreen = QCheckBox(self.tr("Запустить в полноэкранном режиме"))
         self.fullscreen.setChecked(cfg.start_fullscreen)
         form.addRow("", self.fullscreen)
 
         root.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Подключиться")
+        buttons.button(QDialogButtonBox.Ok).setText(self.tr("Подключиться"))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
         self._auth_changed(self.auth.currentText())
+        # Auto-focus the host field so the user can start typing right away.
+        self.host.setFocus()
+        # Validate the geometry field live and colour the row red on a bad value.
+        self.geometry.editingFinished.connect(self._validate_geometry)
 
     def _auth_changed(self, method: str):
         is_key = method == "key"
@@ -101,10 +106,22 @@ class ConnectDialog(QDialog):
         self.secret.setEnabled(is_key or is_pw)
 
     def _browse_key(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Выбрать приватный ключ",
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Выбрать приватный ключ"),
                                               os.path.expanduser("~"))
         if path:
             self.key_path.setText(path)
+
+    def _validate_geometry(self):
+        """Highlight the geometry field red if it isn't a valid WxH string."""
+        txt = self.geometry.text().strip().lower()
+        ok = False
+        try:
+            w, h = txt.split("x")
+            w, h = int(w), int(h)
+            ok = 16 <= w <= 7680 and 16 <= h <= 4320
+        except Exception:
+            ok = False
+        self.geometry.setStyleSheet("" if ok else "border: 1px solid #d23b3b;")
 
     def _recent_hosts_path(self) -> Path:
         d = Path(os.path.expanduser("~/.config/ssh-remote-desktop"))
@@ -156,10 +173,13 @@ class ConnectDialog(QDialog):
         host = self.host.currentText().strip()
         user = self.user.text().strip()
         if not host:
-            QMessageBox.warning(self, "Подключение", "Укажите хост.")
+            QMessageBox.warning(self, self.tr("Подключение"), self.tr("Укажите хост."))
             return
         if not user:
-            QMessageBox.warning(self, "Подключение", "Укажите пользователя.")
+            QMessageBox.warning(self, self.tr("Подключение"), self.tr("Укажите пользователя."))
+            return
+        if not self._validate_geometry(self.geometry.text()):
+            QMessageBox.warning(self, self.tr("Подключение"), self.tr("Разрешение должно быть вида WxH (например 1920x1080), не меньше 320x240."))
             return
         self.apply_to_config()
         self._save_recent_host(host)

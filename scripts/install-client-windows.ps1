@@ -1,14 +1,18 @@
 <#
   One-line install for the CLIENT on Windows (PowerShell 5.1+).
 
+  Downloads the universal installer and runs it in run mode (prebuilt binary
+  from the latest release by default). Forwards every flag, including
+  -Version / -FromSource.
+
   Run in PowerShell:
 
     iwr -useb https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-client-windows.ps1 | iex
 
-  Or:
+  With flags (run as a file):
 
-    Invoke-Expression (Invoke-WebRequest -UseBasicParsing `
-      https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-client-windows.ps1).Content
+    .\install-client-windows.ps1 -Version 1.1.0
+    .\install-client-windows.ps1 -FromSource
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -39,8 +43,9 @@ $env:SSH_REMOTE_DESKTOP_COMPONENT = "client"
 Invoke-WebRequest -UseBasicParsing -OutFile $installer `
     "https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.ps1"
 
-& $py -m pip install --upgrade pip
-& $py $installer --dev --build --dir $Dir @args
+# Run in run mode (prebuilt binary) by default; forward all caller args so
+# -Version / -FromSource / -Uninstall etc. propagate.
+& $py $installer -Run -Dir $Dir @args
 
 Write-Host ""
-Write-Host "[+] Done. Run 'rd-client' from a shell, or 'rd-client --keygen' to generate an SSH key."
+Write-Host "[+] Done. Run 'rd-client' from a new shell, or 'rd-client --keygen' to generate an SSH key."

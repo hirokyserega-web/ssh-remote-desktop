@@ -19,7 +19,7 @@ buttons to compensate (see :mod:`client.mainwindow`).
 from __future__ import annotations
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QPointF, Signal
+from PySide6.QtCore import Qt, QPointF, Signal, QTimer
 from PySide6.QtGui import QImage, QPainter, QColor
 
 from . import keymap_qt
@@ -43,6 +43,13 @@ class DesktopView(QWidget):
         self._scale_to_window = True
         # destination rect of the drawn image (for coordinate mapping)
         self._draw_rect = (0, 0, 1, 1)
+        # Connection-state overlay shown when no live frame is available.
+        # None == "no signal" placeholder; a string == that message + spinner.
+        self._overlay = None
+        self._spinner_angle = 0
+        self._spinner = QTimer(self)
+        self._spinner.timeout.connect(self._tick_spinner)
+        self._spinner.setInterval(80)
 
     # -- frame intake ------------------------------------------------------
     def set_frame(self, rgb_bytes: bytes, width: int, height: int):
@@ -50,10 +57,33 @@ class DesktopView(QWidget):
         img = QImage(rgb_bytes, width, height, width * 3, QImage.Format_RGB888)
         # QImage does not copy the buffer; keep a copy so it stays valid.
         self._image = img.copy()
+        # A live frame clears any connection-state overlay.
+        if self._overlay is not None:
+            self._overlay = None
+            self._spinner.stop()
         self.update()
 
     def set_scale_to_window(self, on: bool):
         self._scale_to_window = on
+        self.update()
+
+    # -- overlay / state --------------------------------------------------
+    def set_overlay(self, text):
+        """Show a connection-state overlay.
+
+        ``None`` -> plain "no signal" placeholder (no spinner).
+        A string -> that message plus an animated spinner (connecting /
+        reconnecting). A live frame arriving clears the overlay.
+        """
+        self._overlay = text
+        if text is not None:
+            self._spinner.start()
+        else:
+            self._spinner.stop()
+        self.update()
+
+    def _tick_spinner(self):
+        self._spinner_angle = (self._spinner_angle + 30) % 360
         self.update()
 
     # -- painting ----------------------------------------------------------
@@ -61,13 +91,32 @@ class DesktopView(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(18, 18, 18))
         if self._image is None:
-            painter.setPen(QColor(160, 160, 160))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Нет сигнала")
+            self._paint_overlay(painter)
             return
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         target = self._compute_target_rect()
         self._draw_rect = (target.x(), target.y(), target.width(), target.height())
         painter.drawImage(target, self._image)
+
+    def _paint_overlay(self, painter):
+        """Draw the placeholder / connection-state overlay with a spinner."""
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QConicalGradient
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect()
+        text = self._overlay or self.tr("Нет сигнала")
+        painter.setPen(QColor(200, 200, 200))
+        painter.drawText(rect, Qt.AlignCenter, text)
+        # Animated spinner only when an explicit overlay (connecting…) is set.
+        if self._overlay is not None:
+            cx, cy = rect.width() / 2, rect.height() / 2 + 40
+            r = 14
+            grad = QConicalGradient(cx, cy, self._spinner_angle)
+            grad.setColorAt(0.0, QColor(245, 180, 0, 255))
+            grad.setColorAt(1.0, QColor(245, 180, 0, 0))
+            painter.setBrush(grad)
+            painter.setPen(QColor(245, 180, 0, 0))
+            painter.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
 
     def _compute_target_rect(self):
         from PySide6.QtCore import QRectF

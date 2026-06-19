@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # One-line install for the SERVER on a Linux host.
-# Sets up system packages, runs the dev checkout, builds the server binary.
+# Thin wrapper around the universal installer; forwards every flag including
+# --version / --from-source. Run with sudo (the server needs root for PAM,
+# Xvfb, and /dev/uinput).
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-server-linux.sh | sudo bash
-#   ... | sudo bash -s -- --no-build
+#   curl -fsSL .../install-server-linux.sh | sudo bash
+#   ... | sudo bash -s -- --version 1.1.0
+#   ... | sudo bash -s -- --from-source
 set -euo pipefail
 
 # Some distros don't have curl by default.
@@ -17,4 +20,4 @@ export SSH_REMOTE_DESKTOP_DIR="${SSH_REMOTE_DESKTOP_DIR:-/opt/ssh-remote-desktop
 
 curl -fsSL \
   https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.sh \
-  | bash -s -- --dev --build --dir "$SSH_REMOTE_DESKTOP_DIR" "$@"
+  | bash -s -- --component server --dir "$SSH_REMOTE_DESKTOP_DIR" "$@"

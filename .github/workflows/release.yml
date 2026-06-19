@@ -1,0 +1,202 @@
+name: Release
+
+# Auto-build and publish binaries on every version tag (vX.Y.Z).
+# Also supports a manual dispatch with an explicit version for testing the
+# pipeline without cutting a real tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build and release (e.g. 1.1.0, without leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write   # needed to create the GitHub Release and upload assets
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: client + server (both built on one runner to share deps)
+          - os: ubuntu-latest
+            label: linux
+            build: build_client_linux.sh build_server_linux.sh
+            components: client server
+          # Windows: client only
+          - os: windows-latest
+            label: windows
+            build: build_client_windows.sh
+            components: client
+          # macOS: client only, optional (does not block the release)
+          - os: macos-latest
+            label: macos
+            build: build_client_linux.sh
+            components: client
+            optional: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-6 libxext6 libxtst6 libxfixes3 libxdamage1 \
+            libxkbcommon0 libdbus-1-3 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xinerama0 \
+            libxcb-xkb1 libxcb-xfixes0 libxkbcommon-x11-0 \
+            libegl1 libgl1 libfontconfig1 libglib2.0-0 \
+            xvfb ccache patchelf
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          python -m pip install -U pip wheel setuptools
+          pip install -r requirements.txt
+          pip install -e .
+          pip install nuitka zstandard ordered-set
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          chmod +x build_*.sh
+          for script in ${{ matrix.build }}; do
+            echo "::group::Running $script"
+            bash "$script"
+            echo "::endgroup::"
+          done
+
+      - name: Detect architecture
+        id: arch
+        shell: bash
+        run: |
+          arch="x86_64"
+          if [[ "${{ matrix.label }}" == "macos" ]]; then
+            arch="$(uname -m)"
+          fi
+          echo "arch=$arch" >> "$GITHUB_OUTPUT"
+
+      - name: Package artifacts
+        id: pkg
+        shell: bash
+        env:
+          OS_LABEL: ${{ matrix.label }}
+          ARCH: ${{ steps.arch.outputs.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          SHA_FILE="staging/SHA256SUMS-${OS_LABEL}"
+          # Archive each component (log to stdout), collect sha lines separately.
+          sha_lines=""
+          for comp in ${{ matrix.components }}; do
+            bin="dist/rd-${comp}"
+            [[ "${{ matrix.os }}" == "windows-latest" ]] && bin="dist/rd-${comp}.exe"
+            if [[ ! -f "$bin" ]]; then
+              echo "Binary $bin not found; skipping $comp" >&2
+              continue
+            fi
+            ext="tar.gz"
+            [[ "${{ matrix.os }}" == "windows-latest" ]] && ext="zip"
+            archive="ssh-remote-desktop-${comp}-${OS_LABEL}-${ARCH}.${ext}"
+            if [[ "$ext" == "zip" ]]; then
+              (cd dist && 7z a "../staging/${archive}" "rd-${comp}.exe") >/dev/null
+            else
+              tar -C dist -czf "staging/${archive}" "rd-${comp}"
+            fi
+            if command -v sha256sum >/dev/null 2>&1; then
+              line=$(sha256sum "staging/${archive}")
+            else
+              line=$(shasum -a 256 "staging/${archive}")
+            fi
+            echo "$line"
+            sha_lines="${sha_lines}${line}"$'\n'
+          done
+          printf '%s' "$sha_lines" > "$SHA_FILE"
+          printf '%s' "$sha_lines" >> staging/SHA256SUMS
+          {
+            echo "files<<EOF"
+            find staging -type f -printf '%f\n' | sort
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.label }}
+          path: staging/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: always() && !cancelled()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: ver
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$VERSION" != "$FILE_VERSION" ]]; then
+            echo "::error::Tag version '$VERSION' does not match VERSION file '$FILE_VERSION'"
+            exit 1
+          fi
+          echo "Resolved version: $VERSION (matches VERSION file)"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Merge SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd release-assets
+          # Combine per-OS sum files into one canonical SHA256SUMS, deduped.
+          : > SHA256SUMS
+          for f in SHA256SUMS-*; do
+            [[ -f "$f" ]] && cat "$f" >> SHA256SUMS
+          done
+          # Keep only archive lines (strip the per-OS sum files themselves).
+          grep -E 'ssh-remote-desktop-.*\.(tar\.gz|zip)$' SHA256SUMS | \
+            sort -u > SHA256SUMS.tmp && mv SHA256SUMS.tmp SHA256SUMS
+          rm -f SHA256SUMS-*
+          echo "::group::Release assets"
+          ls -la
+          cat SHA256SUMS
+          echo "::endgroup::"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            release-assets/ssh-remote-desktop-*.tar.gz
+            release-assets/ssh-remote-desktop-*.zip
+            release-assets/SHA256SUMS
