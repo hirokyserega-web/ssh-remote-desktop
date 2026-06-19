@@ -49,6 +49,21 @@ jobs:
             exit 1
           }
 
+  actionlint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz"
+          tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint
+      - name: Run actionlint
+        run: actionlint
+
   test-linux:
     name: Tests (Linux, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

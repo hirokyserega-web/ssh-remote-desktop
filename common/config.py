@@ -119,6 +119,11 @@ class ClientConfig:
     reconnect_delay: float = 2.0
     max_reconnect_attempts: int = 0    # 0 == infinite
 
+    # UI preferences.
+    theme: str = "system"               # "light" | "dark" | "system"
+    language: str = "ru"                # "ru" | "en"
+    jpeg_quality: int = 80              # default JPEG quality for the connect dialog
+
     log_level: str = "INFO"
 
     @staticmethod

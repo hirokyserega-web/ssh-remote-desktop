@@ -156,6 +156,15 @@ class Transport:
                 queued = 0
         self._send(Channel.CONTROL, messages.stats(loss=loss, rtt_ms=rtt, queued=queued))
 
+    def get_stats(self):
+        """Return a snapshot of RTT/loss stats (thread-safe)."""
+        return {
+            "rtt_ms": sum(self._rtt_samples) / len(self._rtt_samples) if self._rtt_samples else 0.0,
+            "loss": max(0.0, (self._pings_sent - self._pongs_recv) / self._pings_sent) if self._pings_sent else 0.0,
+            "pings_sent": self._pings_sent,
+            "pongs_recv": self._pongs_recv,
+        }
+
     def get_connection(self):
         """Return the live asyncssh connection (for SFTP); may be None."""
         return self._conn

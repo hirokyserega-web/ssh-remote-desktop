@@ -87,6 +87,19 @@ def main(argv=None):
     app = QApplication(sys.argv)
     app.setApplicationName("SSH Remote Desktop")
 
+    # Apply saved theme + language before any window is shown so all dialogs
+    # open with the right look/strings.
+    try:
+        from .theme import apply_theme
+        apply_theme(app, cfg.theme)
+    except Exception:
+        pass
+    try:
+        from .i18n import set_language
+        set_language(app, cfg.language)
+    except Exception:
+        pass
+
     if args.keygen:
         from .keys_dialog import KeysDialog
         dlg = KeysDialog(cfg, None)

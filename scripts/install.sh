@@ -1,34 +1,48 @@
 #!/usr/bin/env bash
 # Universal installer for ssh-remote-desktop.
-# Detects platform, picks the right installer, and forwards all arguments.
+#
+# Default mode (--run): download a prebuilt binary from the latest GitHub
+# Release for this platform, verify its SHA256 checksum, install it and symlink
+# it into ~/.local/bin. Falls back to building from source when no matching
+# release asset exists (or with --from-source).
+#
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.sh | bash
+#   ... | bash -s -- --version 1.1.0
+#   ... | bash -s -- --from-source
 #   ... | bash -s -- --dev
-#   ... | bash -s -- --no-build
 set -euo pipefail
 
-REPO_URL="https://github.com/hirokyserega-web/ssh-remote-desktop"
-REPO_RAW="https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main"
+REPO="hirokyserega-web/ssh-remote-desktop"
+REPO_URL="https://github.com/${REPO}"
+REPO_RAW="https://raw.githubusercontent.com/${REPO}/main"
+API_URL="https://api.github.com/repos/${REPO}"
 TARGET_DIR="${SSH_REMOTE_DESKTOP_DIR:-$HOME/.local/share/ssh-remote-desktop}"
-MODE="run"    # run | dev | both
-BUILD="auto"  # auto | yes | no
+MODE="run"      # run | dev | both
+BUILD="auto"    # auto | yes | no
 PYTHON_BIN=""
 UNINSTALL="no"
+VERSION=""      # specific release version (X.Y.Z), empty = latest
+FROM_SOURCE="no"
+COMPONENT=""    # client | server | both; empty = auto (both on linux, client elsewhere)
 
 usage() {
   cat <<USAGE
 ssh-remote-desktop installer
 
 Usage: install.sh [options]
-  --dev         Install development checkout (git clone, editable pip install)
-  --run         Install stable release into ~/.local/share/ssh-remote-desktop (default)
-  --both        Install dev checkout AND try to build a binary
-  --no-build    Skip compiling binaries, just install Python deps
-  --build       Force building binaries with Nuitka
-  --dir PATH    Install into a different directory
-  --python BIN  Use a specific Python interpreter
-  --uninstall   Remove the installation in --dir (venv, sources, symlinks)
-  -h, --help    Show this help
+  --dev            Development checkout (git clone, editable pip install)
+  --run            Install a stable release (default)
+  --both           Dev checkout AND try to build a binary
+  --no-build       Skip compiling binaries, just install Python deps
+  --build          Force building binaries with Nuitka
+  --dir PATH       Install into a different directory
+  --python BIN     Use a specific Python interpreter
+  --version X.Y.Z  Install a specific release version (binary or source tag)
+  --from-source    Skip release binaries; always build from source
+  --component C    client | server | both (default: both on Linux, client elsewhere)
+  --uninstall      Remove the install (binary, venv, sources, symlinks, empty config)
+  -h, --help       Show this help
 
 Environment:
   SSH_REMOTE_DESKTOP_DIR  default install directory
@@ -36,10 +50,11 @@ USAGE
 }
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 err() { printf '\033[1;31mERR:\033[0m %s\n' "$*" >&2; }
 
 # ---- argument parsing ------------------------------------------------------
-ARGS=()
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dev) MODE="dev"; shift;;
@@ -49,9 +64,19 @@ while [[ $# -gt 0 ]]; do
     --build) BUILD="yes"; shift;;
     --dir) TARGET_DIR="$2"; shift 2;;
     --python) PYTHON_BIN="$2"; shift 2;;
+    --version)
+      if [[ $# -ge 2 && "${2#-}" == "$2" ]]; then
+        VERSION="$2"; shift 2
+      else
+        printf '%s\n' "$(cat "$HERE/../VERSION" 2>/dev/null || echo unknown)"
+        exit 0
+      fi
+      ;;
+    --from-source) FROM_SOURCE="yes"; shift;;
+    --component) COMPONENT="$2"; shift 2;;
     --uninstall) UNINSTALL="yes"; shift;;
     -h|--help) usage; exit 0;;
-    *) ARGS+=("$1"); shift;;
+    *) err "unknown argument: $1"; usage; exit 1;;
   esac
 done
 
@@ -65,8 +90,13 @@ detect_os() {
   esac
 }
 
+detect_arch() {
+  ARCH="$(uname -m)"
+}
+
 detect_distro() {
   if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
     . /etc/os-release
     DISTRO="${ID:-unknown}"
   else
@@ -74,11 +104,44 @@ detect_distro() {
   fi
 }
 
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1
+need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+default_components() {
+  if [[ -n "$COMPONENT" ]]; then
+    echo "$COMPONENT"
+    return
+  fi
+  case "$OS" in
+    linux) echo "both";;
+    *) echo "client";;
+  esac
 }
 
-# ---- package manager helpers -----------------------------------------------
+# Expand "both" into the concrete list for this platform.
+expand_components() {
+  local sel; sel="$1"
+  case "$sel" in
+    both)
+      case "$OS" in
+        linux) echo "client server";;
+        *) echo "client";;
+      esac
+      ;;
+    *) echo "$sel";;
+  esac
+}
+
+asset_name() {
+  # $1 = component (client|server)
+  local comp="$1" ext
+  case "$OS" in
+    windows) ext="zip";;
+    *) ext="tar.gz";;
+  esac
+  echo "ssh-remote-desktop-${comp}-${OS}-${ARCH}.${ext}"
+}
+
+# ---- package manager helpers (source path) ---------------------------------
 pkg_install() {
   local pkgs=("$@")
   case "$DISTRO" in
@@ -112,125 +175,157 @@ ensure_sudo() {
   fi
 }
 
-# ---- Python interpreter ----------------------------------------------------
-find_python() {
-  if [[ -n "$PYTHON_BIN" ]]; then
-    command -v "$PYTHON_BIN" || { err "Python '$PYTHON_BIN' not found"; exit 1; }
-    return
+# ---- release asset download ------------------------------------------------
+# Resolve the download URL for an asset. Tries the direct "latest/download"
+# (or "download/vX.Y.Z") path first, then the GitHub API. Prints the URL on
+# stdout (empty on failure).
+resolve_asset_url() {
+  local asset="$1" version="$2"
+  local direct=""
+  if [[ -n "$version" ]]; then
+    direct="$REPO_URL/releases/download/v${version}/${asset}"
+  else
+    direct="$REPO_URL/releases/latest/download/${asset}"
   fi
-  for cand in python3.13 python3.12 python3.11 python3; do
-    if command -v "$cand" >/dev/null 2>&1; then
-      command -v "$cand"
-      return
+  if curl -fsSI "$direct" -o /dev/null 2>/dev/null; then
+    echo "$direct"
+    return 0
+  fi
+  # API fallback: list assets for the latest (or tagged) release.
+  local api_path="releases/latest"
+  [[ -n "$version" ]] && api_path="releases/tags/v${version}"
+  local url
+  url=$(curl -fsSL "${API_URL}/${api_path}" 2>/dev/null \
+        | grep -o "\"browser_download_url\": *\"[^\"]*${asset}\"" \
+        | head -1 | sed -E 's/.*"browser_download_url": *"([^"]*)".*/\1/')
+  echo "${url:-}"
+}
+
+# Download $1 (url) into $2 (dest path).
+download_to() {
+  local url="$1" dest="$2"
+  if ! curl -fsSL "$url" -o "$dest" 2>/dev/null; then
+    return 1
+  fi
+}
+
+# Verify the SHA256 of $1 (archive path) against the release SHA256SUMS.
+# Downloads SHA256SUMS from the same release and greps the matching line.
+verify_sha256() {
+  local archive="$1" version="$2" base sums_url sums_file expected actual
+  base="$(basename "$archive")"
+  if [[ -n "$version" ]]; then
+    sums_url="$REPO_URL/releases/download/v${version}/SHA256SUMS"
+  else
+    sums_url="$REPO_URL/releases/latest/download/SHA256SUMS"
+  fi
+  sums_file="$(mktemp -t srd-sums-XXXXXX)"
+  if ! download_to "$sums_url" "$sums_file"; then
+    rm -f "$sums_file"
+    warn "SHA256SUMS unavailable from release; skipping checksum verification."
+    return 0
+  fi
+  expected=$(grep -E " ${base}\$" "$sums_file" | awk '{print $1}' | head -1)
+  rm -f "$sums_file"
+  if [[ -z "$expected" ]]; then
+    warn "No SHA256 entry for $base in SHA256SUMS; skipping verification."
+    return 0
+  fi
+  if ! need_cmd sha256sum; then
+    if need_cmd shasum; then
+      actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+    else
+      warn "Neither sha256sum nor shasum available; skipping verification."
+      return 0
     fi
+  else
+    actual=$(sha256sum "$archive" | awk '{print $1}')
+  fi
+  if [[ "$expected" != "$actual" ]]; then
+    err "SHA256 mismatch for $base (expected $expected, got $actual)"
+    return 1
+  fi
+  log "Checksum OK: $base"
+  return 0
+}
+
+# Try to install prebuilt binaries for the requested components.
+# Returns 0 only if ALL requested components got a binary; 1 otherwise (so the
+# caller can fall back to source for the missing ones).
+install_release_binaries() {
+  local comps sel comp asset url archive bindir
+  sel="$(default_components)"
+  comps="$(expand_components "$sel")"
+  bindir="$TARGET_DIR/bin"
+  mkdir -p "$bindir"
+  local missing=0
+  for comp in $comps; do
+    asset="$(asset_name "$comp")"
+    log "Looking for release asset: $asset"
+    url="$(resolve_asset_url "$asset" "$VERSION")"
+    if [[ -z "$url" ]]; then
+      warn "No release asset for $comp ($asset). Will build from source."
+      missing=1
+      continue
+    fi
+    archive="$(mktemp -t srd-XXXXXX)"
+    log "Downloading: $url"
+    if ! download_to "$url" "$archive"; then
+      warn "Download failed for $asset. Will build from source."
+      rm -f "$archive"
+      missing=1
+      continue
+    fi
+    if ! verify_sha256 "$archive" "$VERSION"; then
+      rm -f "$archive"
+      missing=1
+      continue
+    fi
+    # Extract into bindir.
+    case "$OS" in
+      windows)
+        # Windows extraction is handled by install.ps1; this branch is a no-op
+        # safety net when run under MSYS/Cygwin bash.
+        (cd "$bindir" && unzip -o "$archive") >/dev/null 2>&1 || tar -C "$bindir" -xzf "$archive"
+        ;;
+      *)
+        tar -C "$bindir" -xzf "$archive"
+        ;;
+    esac
+    chmod +x "$bindir/rd-${comp}" 2>/dev/null || true
+    rm -f "$archive"
+    log "Installed prebuilt binary: rd-${comp}"
   done
-  err "Python 3.11+ is required but not found."
-  exit 1
+  return "$missing"
 }
 
-# ---- platform-specific system deps -----------------------------------------
-install_system_deps() {
-  ensure_sudo
-  case "$OS" in
-    linux)
-      # Common build deps + Qt, X11, Wayland client libs, ssh tooling.
-      # Crypto/ssh server deps below.
-      case "$DISTRO" in
-        ubuntu|debian|linuxmint|pop)
-          pkg_install \
-            python3 python3-pip python3-venv python3-dev build-essential \
-            libssl-dev libffi-dev libxcb-cursor0 libxkbcommon0 \
-            libxcb-shape0 libxcb-shm0 libxcb-xinerama0 libxcb-randr0 \
-            libxcb-render0 libxcb-render-util0 libxcb-image0 libxcb-keysyms1 \
-            libxcb-icccm4 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 \
-            libqt6gui6 libqt6widgets6 libqt6network6 libqt6waylandclient6 \
-            qt6-wayland qml6-module-qtquick qml6-module-qtqml-workerscript \
-            libwayland-client0 libwayland-cursor0 libwayland-egl1 \
-            libegl1 libxkbcommon-x11-0 libdbus-1-3 \
-            xvfb xauth xclip openssh-client openssh-server ffmpeg \
-            xdg-utils dbus-x11 \
-            || true
-          ;;
-        fedora|rhel|centos|rocky|almalinux)
-          pkg_install \
-            python3 python3-pip python3-devel gcc make \
-            openssl-devel libffi-devel \
-            qt6-qtbase qt6-qtbase-gui qt6-qtwayland \
-            wayland-devel libxkbcommon-x11 libxcb-devel \
-            mesa-libEGL-devel dbus-devel \
-            xorg-x11-server-Xvfb xorg-x11-xauth xclip \
-            openssh-server ffmpeg xdg-utils \
-            || true
-          ;;
-        arch|manjaro)
-          pkg_install \
-            python python-pip \
-            qt6-base qt6-wayland \
-            xcb-util-cursor libxkbcommon-x11 wayland \
-            xorg-server-xvfb xauth xclip \
-            openssh ffmpeg xdg-utils \
-            || true
-          ;;
-        alpine)
-          pkg_install \
-            python3 py3-pip python3-dev musl-dev gcc make \
-            qt6-qtbase qt6-qtwayland libxkbcommon-x11 wayland-libs-client \
-            xvfb-xauth xclip openssh ffmpeg dbus-x11 \
-            || true
-          ;;
-        *)
-          err "Please install Python 3.11+, Qt6, X11/Wayland, OpenSSH, ffmpeg manually."
-          ;;
-      esac
-      # PAM (broker needs python-pam)
-      case "$DISTRO" in
-        ubuntu|debian|linuxmint|pop) pkg_install python3-pam || pkg_install libpam0g-dev || true;;
-        fedora|centos|rhel|rocky|almalinux) pkg_install python-pam pam-devel || true;;
-        arch|manjaro) pkg_install python-pam || true;;
-        alpine) pkg_install py3-pam || true;;
-      esac
-      ;;
-    macos)
-      if ! need_cmd brew; then
-        err "Homebrew not found. Install it from https://brew.sh first."
-        exit 1
-      fi
-      brew install python@3.12 qt openssh xclip || true
-      ;;
-    windows)
-      log "Windows: install Python 3.12+ from python.org and ensure 'Add to PATH' is checked."
-      log "Qt runtime is bundled with PySide6; no extra system install needed."
-      ;;
-  esac
-}
-
-# ---- source retrieval ------------------------------------------------------
+# ---- source retrieval (fallback) -------------------------------------------
 fetch_release_tarball() {
-  log "Downloading ssh-remote-desktop release tarball…"
+  log "Downloading ssh-remote-desktop source tarball…"
   mkdir -p "$TARGET_DIR"
   local tarball
   tarball=$(mktemp -t srd-XXXXXX.tar.gz)
-
-  # Resolve a download URL. Prefer a tagged release matching VERSION, but fall
-  # back to the main branch tarball if the tag does not exist (e.g. no release
-  # has been published yet, or VERSION was bumped but not tagged). We verify
-  # each candidate with a HEAD request so a 404 never aborts the whole install.
-  local version=""
-  version=$(curl -fsSL "$REPO_RAW/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
-
   local url=""
-  if [[ -n "$version" ]]; then
-    local tag_url="$REPO_URL/archive/refs/tags/v${version}.tar.gz"
+  if [[ -n "$VERSION" ]]; then
+    local tag_url="$REPO_URL/archive/refs/tags/v${VERSION}.tar.gz"
     if curl -fsSI "$tag_url" -o /dev/null 2>/dev/null; then
       url="$tag_url"
     else
-      log "Release tag v${version} not found (404); falling back to main branch."
+      warn "Release tag v${VERSION} not found; falling back to main branch."
+    fi
+  else
+    local version
+    version=$(curl -fsSL "$REPO_RAW/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
+    if [[ -n "$version" ]]; then
+      local tag_url="$REPO_URL/archive/refs/tags/v${version}.tar.gz"
+      if curl -fsSI "$tag_url" -o /dev/null 2>/dev/null; then
+        url="$tag_url"
+      else
+        log "Release tag v${version} not found; using main branch tarball."
+      fi
     fi
   fi
-  if [[ -z "$url" ]]; then
-    url="$REPO_URL/archive/refs/heads/main.tar.gz"
-  fi
-
+  [[ -z "$url" ]] && url="$REPO_URL/archive/refs/heads/main.tar.gz"
   log "Fetching: $url"
   if ! curl -fsSL "$url" -o "$tarball"; then
     err "Failed to download sources from $url"
@@ -252,11 +347,20 @@ clone_dev() {
   fi
 }
 
-# ---- venv + python deps ----------------------------------------------------
-do_uninstall() {
-  if [[ "$UNINSTALL" != "yes" ]]; then return; fi
-  log "Uninstalling ssh-remote-desktop from $TARGET_DIR…"
-  rm -rf "$TARGET_DIR"
+# ---- venv + python deps (source path) --------------------------------------
+find_python() {
+  if [[ -n "$PYTHON_BIN" ]]; then
+    command -v "$PYTHON_BIN" || { err "Python '$PYTHON_BIN' not found"; exit 1; }
+    return
+  fi
+  for cand in python3.13 python3.12 python3.11 python3; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      command -v "$cand"
+      return
+    fi
+  done
+  err "Python 3.11+ is required but not found."
+  exit 1
 }
 
 setup_venv() {
@@ -273,12 +377,69 @@ setup_venv() {
   pip install --upgrade pip wheel setuptools
   log "Installing Python dependencies…"
   pip install -r "$TARGET_DIR/requirements.txt"
-  # pip install the project itself in dev mode for the `server` / `client` /
-  # `common` / `crypto` importable modules when running from source.
   pip install -e "$TARGET_DIR"
 }
 
-# ---- optional Nuitka build -------------------------------------------------
+# ---- system deps (source path) ---------------------------------------------
+install_system_deps() {
+  [[ "$OS" == "linux" ]] || return 0
+  ensure_sudo
+  case "$DISTRO" in
+    ubuntu|debian|linuxmint|pop)
+      pkg_install \
+        python3 python3-pip python3-venv python3-dev build-essential \
+        libssl-dev libffi-dev libxcb-cursor0 libxkbcommon0 \
+        libxcb-shape0 libxcb-shm0 libxcb-xinerama0 libxcb-randr0 \
+        libxcb-render0 libxcb-render-util0 libxcb-image0 libxcb-keysyms1 \
+        libxcb-icccm4 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 \
+        libqt6gui6 libqt6widgets6 libqt6network6 libqt6waylandclient6 \
+        qt6-wayland qml6-module-qtquick qml6-module-qtqml-workerscript \
+        libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+        libegl1 libxkbcommon-x11-0 libdbus-1-3 \
+        xvfb xauth xclip openssh-client openssh-server ffmpeg \
+        xdg-utils dbus-x11 \
+        || true
+      ;;
+    fedora|rhel|centos|rocky|almalinux)
+      pkg_install \
+        python3 python3-pip python3-devel gcc make \
+        openssl-devel libffi-devel \
+        qt6-qtbase qt6-qtbase-gui qt6-qtwayland \
+        wayland-devel libxkbcommon-x11 libxcb-devel \
+        mesa-libEGL-devel dbus-devel \
+        xorg-x11-server-Xvfb xorg-x11-xauth xclip \
+        openssh-server ffmpeg xdg-utils \
+        || true
+      ;;
+    arch|manjaro)
+      pkg_install \
+        python python-pip \
+        qt6-base qt6-wayland \
+        xcb-util-cursor libxkbcommon-x11 wayland \
+        xorg-server-xvfb xauth xclip \
+        openssh ffmpeg xdg-utils \
+        || true
+      ;;
+    alpine)
+      pkg_install \
+        python3 py3-pip python3-dev musl-dev gcc make \
+        qt6-qtbase qt6-qtwayland libxkbcommon-x11 wayland-libs-client \
+        xvfb-xauth xclip openssh ffmpeg dbus-x11 \
+        || true
+      ;;
+    *)
+      err "Please install Python 3.11+, Qt6, X11/Wayland, OpenSSH, ffmpeg manually."
+      ;;
+  esac
+  case "$DISTRO" in
+    ubuntu|debian|linuxmint|pop) pkg_install python3-pam || pkg_install libpam0g-dev || true;;
+    fedora|centos|rhel|rocky|almalinux) pkg_install python-pam pam-devel || true;;
+    arch|manjaro) pkg_install python-pam || true;;
+    alpine) pkg_install py3-pam || true;;
+  esac
+}
+
+# ---- optional Nuitka build (source path) -----------------------------------
 maybe_build() {
   if [[ "$BUILD" == "no" ]]; then return; fi
   if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
@@ -290,12 +451,10 @@ maybe_build() {
   source "$TARGET_DIR/.venv/bin/activate"
   pip install -q nuitka zstandard ordered-set
   chmod +x "$TARGET_DIR"/build_*.sh
-  if [[ "$OS" == "windows" ]]; then
-    bash "$TARGET_DIR/build_client_windows.sh" || log "client build failed"
-    bash "$TARGET_DIR/build_server_linux.sh" || log "server build skipped (Linux-only)"
-  elif [[ "$OS" == "linux" ]]; then
-    bash "$TARGET_DIR/build_client_linux.sh" || log "client build failed"
-    bash "$TARGET_DIR/build_server_linux.sh" || log "server build failed"
+  mkdir -p "$TARGET_DIR/bin"
+  if [[ "$OS" == "linux" ]]; then
+    (cd "$TARGET_DIR" && bash build_client_linux.sh && mv dist/rd-client bin/rd-client) || log "client build failed"
+    (cd "$TARGET_DIR" && bash build_server_linux.sh && mv dist/rd-server bin/rd-server) || log "server build failed"
   else
     log "macOS: no preconfigured build script — pip-installed packages only."
   fi
@@ -304,40 +463,90 @@ maybe_build() {
 # ---- post-install wiring ---------------------------------------------------
 post_install() {
   mkdir -p "$HOME/.config/ssh-remote-desktop"
-  # Symlink into ~/.local/bin if writable. Idempotent: ln -sf always
-  # re-points the link, so re-running the installer refreshes stale links
-  # instead of leaving a dangling symlink from a previous venv.
   if [[ -d "$HOME/.local/bin" ]] || mkdir -p "$HOME/.local/bin"; then
-    ln -sf "$TARGET_DIR/.venv/bin/rd-server" "$HOME/.local/bin/rd-server" 2>/dev/null || true
-    ln -sf "$TARGET_DIR/.venv/bin/rd-client" "$HOME/.local/bin/rd-client" 2>/dev/null || true
+    # Prefer prebuilt binaries in $TARGET_DIR/bin; fall back to the venv's
+    # console scripts when installed from source.
+    for name in rd-server rd-client; do
+      local target=""
+      if [[ -x "$TARGET_DIR/bin/$name" ]]; then
+        target="$TARGET_DIR/bin/$name"
+      elif [[ -x "$TARGET_DIR/.venv/bin/$name" ]]; then
+        target="$TARGET_DIR/.venv/bin/$name"
+      fi
+      if [[ -n "$target" ]]; then
+        ln -sf "$target" "$HOME/.local/bin/$name" 2>/dev/null || true
+      fi
+    done
   fi
+}
+
+# ---- uninstall -------------------------------------------------------------
+do_uninstall() {
+  if [[ "$UNINSTALL" != "yes" ]]; then return; fi
+  log "Uninstalling ssh-remote-desktop…"
+  # 1. The install directory (prebuilt binaries, venv, sources).
+  rm -rf "$TARGET_DIR"
+  # 2. The PATH symlinks.
+  for name in rd-server rd-client; do
+    if [[ -L "$HOME/.local/bin/$name" || -e "$HOME/.local/bin/$name" ]]; then
+      local link_target
+      link_target=$(readlink -f "$HOME/.local/bin/$name" 2>/dev/null || true)
+      # Only remove links that pointed into our install dir; never touch a
+      # user's manually-placed binary of the same name elsewhere.
+      if [[ "$link_target" == "$TARGET_DIR"* ]] || [[ -z "$link_target" ]]; then
+        rm -f "$HOME/.local/bin/$name"
+        log "Removed symlink ~/.local/bin/$name"
+      fi
+    fi
+  done
+  # 3. The config dir, but only if it is empty (never wipe user keys/hosts).
+  local cfgdir="$HOME/.config/ssh-remote-desktop"
+  if [[ -d "$cfgdir" ]] && [[ -z "$(find "$cfgdir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    rmdir "$cfgdir"
+    log "Removed empty config dir $cfgdir"
+  fi
+  log "Uninstall complete."
+  exit 0
 }
 
 # ---- main flow -------------------------------------------------------------
 main() {
   detect_os
+  detect_arch
   detect_distro
-  log "Detected: $OS / $DISTRO"
+  log "Detected: $OS / $ARCH / ${DISTRO:-n/a}"
   log "Target directory: $TARGET_DIR"
-  log "Mode: $MODE (build=$BUILD)"
+  log "Mode: $MODE (build=$BUILD, from-source=$FROM_SOURCE)"
 
-  if [[ "$UNINSTALL" == "yes" ]]; then
-    do_uninstall
-    exit 0
+  do_uninstall
+
+  install_system_deps || warn "Some system packages failed to install; continuing."
+
+  # --run mode: try prebuilt release binaries first (unless --from-source).
+  if [[ "$MODE" == "run" && "$FROM_SOURCE" == "no" && "$OS" != "windows" ]]; then
+    if install_release_binaries; then
+      post_install
+      log "Installation complete (prebuilt binaries from release)."
+      print_next_steps
+      exit 0
+    fi
+    warn "Not all binaries available from the release; falling back to source."
   fi
 
-  install_system_deps || log "Some system packages failed to install; continuing."
-
+  # Source path (also used by --dev / --both / --from-source / binary fallback).
   case "$MODE" in
     dev|both) clone_dev;;
     run) fetch_release_tarball;;
   esac
-
   setup_venv
   maybe_build
   post_install
 
-  log "Installation complete."
+  log "Installation complete (from source)."
+  print_next_steps
+}
+
+print_next_steps() {
   cat <<NEXT
 
 Next steps:

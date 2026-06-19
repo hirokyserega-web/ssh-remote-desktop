@@ -30,7 +30,7 @@ class FilesDialog(QDialog):
         super().__init__(parent)
         self.transport = transport
         self.cfg = cfg
-        self.setWindowTitle("Файловый менеджер — общая папка")
+        self.setWindowTitle(self.tr("Файловый менеджер — общая папка"))
         self.resize(560, 480)
         self._cwd = ""
         self._transfer = FileTransfer(transport)
@@ -45,11 +45,11 @@ class FilesDialog(QDialog):
         nav = QHBoxLayout()
         self.path_label = QLineEdit("/")
         self.path_label.setReadOnly(True)
-        up = QPushButton("Вверх")
+        up = QPushButton(self.tr("Вверх"))
         up.clicked.connect(self._go_up)
-        refresh = QPushButton("Обновить")
+        refresh = QPushButton(self.tr("Обновить"))
         refresh.clicked.connect(self._refresh)
-        nav.addWidget(QLabel("Путь:"))
+        nav.addWidget(QLabel(self.tr("Путь:")))
         nav.addWidget(self.path_label, 1)
         nav.addWidget(up)
         nav.addWidget(refresh)
@@ -60,13 +60,13 @@ class FilesDialog(QDialog):
         root.addWidget(self.listing, 1)
 
         actions = QHBoxLayout()
-        upload = QPushButton("Загрузить на сервер…")
+        upload = QPushButton(self.tr("Загрузить на сервер…"))
         upload.clicked.connect(self._upload)
-        download = QPushButton("Скачать выбранное…")
+        download = QPushButton(self.tr("Скачать выбранное…"))
         download.clicked.connect(self._download)
-        mkdir = QPushButton("Создать папку")
+        mkdir = QPushButton(self.tr("Создать папку"))
         mkdir.clicked.connect(self._mkdir)
-        delete = QPushButton("Удалить")
+        delete = QPushButton(self.tr("Удалить"))
         delete.clicked.connect(self._delete)
         actions.addWidget(upload)
         actions.addWidget(download)
@@ -112,7 +112,7 @@ class FilesDialog(QDialog):
             self._bridge.error.emit(msg.get("msg", "ошибка"))
 
     def _on_error(self, msg: str):
-        QMessageBox.warning(self, "Файлы", msg)
+        QMessageBox.warning(self, self.tr("Файлы"), msg)
 
     def _populate(self, entries: list[dict]):
         self.listing.clear()
@@ -133,7 +133,7 @@ class FilesDialog(QDialog):
         self._bridge.progress.emit(sent, total)
 
     def _upload(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Файл для загрузки",
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Файл для загрузки"),
                                               os.path.expanduser("~"))
         if not path:
             return
@@ -153,7 +153,7 @@ class FilesDialog(QDialog):
         data = item.data(Qt.UserRole)
         if data.get("is_dir"):
             return
-        dest_dir = QFileDialog.getExistingDirectory(self, "Куда сохранить",
+        dest_dir = QFileDialog.getExistingDirectory(self, self.tr("Куда сохранить"),
                                                      os.path.expanduser("~"))
         if not dest_dir:
             return
@@ -168,7 +168,7 @@ class FilesDialog(QDialog):
 
     def _mkdir(self):
         from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "Новая папка", "Имя папки:")
+        name, ok = QInputDialog.getText(self, self.tr("Новая папка"), self.tr("Имя папки:"))
         if ok and name:
             self.transport.send_files({"t": "file_mkdir", "path": self._remote_path(name)})
             self._refresh()
@@ -178,7 +178,7 @@ class FilesDialog(QDialog):
         if not item:
             return
         data = item.data(Qt.UserRole)
-        if QMessageBox.question(self, "Удалить", f"Удалить {data['name']}?") == QMessageBox.Yes:
+        if QMessageBox.question(self, self.tr("Удалить"), self.tr(f"Удалить {data['name']}?")) == QMessageBox.Yes:
             self.transport.send_files({"t": "file_remove", "path": self._remote_path(data["name"])})
             self._refresh()
 
@@ -191,6 +191,6 @@ class FilesDialog(QDialog):
     def _on_done(self, path, ok, err):
         self.progress.setVisible(False)
         if not ok:
-            QMessageBox.warning(self, "Передача", f"Ошибка: {err}")
+            QMessageBox.warning(self, self.tr("Передача"), self.tr(f"Ошибка: {err}"))
         else:
             self._refresh()
