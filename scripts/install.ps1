@@ -57,19 +57,35 @@ if (Test-Path (Join-Path $PWD 'pyproject.toml')) {
             git clone https://github.com/hirokyserega-web/ssh-remote-desktop.git $RepoDir
         }
     } else {
-        $tag = $null
+        # Try the tagged release first; if the tag does not exist (404) or the
+        # download fails for any reason, fall back to the main branch tarball so
+        # the installer never aborts on a missing/pending release.
+        $tag = ''
         try {
             $tag = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 `
                     'https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/VERSION').Content.Trim()
         } catch { $tag = '' }
-        $archive = if ($tag) {
+        $tagUrl = if ($tag) {
             "https://codeload.github.com/hirokyserega-web/ssh-remote-desktop/tar.gz/refs/tags/v$tag"
-        } else {
-            'https://codeload.github.com/hirokyserega-web/ssh-remote-desktop/tar.gz/refs/heads/main'
-        }
-        Log "Downloading release tarball: $archive"
+        } else { '' }
+        $mainUrl = 'https://codeload.github.com/hirokyserega-web/ssh-remote-desktop/tar.gz/refs/heads/main'
+        $archive = $mainUrl
         $tmp = Join-Path $env:TEMP ("srd-" + [Guid]::NewGuid().ToString('N') + '.tar.gz')
-        Invoke-WebRequest -UseBasicParsing -OutFile $tmp $archive
+        if ($tagUrl) {
+            try {
+                Log "Downloading release tarball v$tag: $tagUrl"
+                Invoke-WebRequest -UseBasicParsing -OutFile $tmp $tagUrl
+                $archive = $tagUrl
+            } catch {
+                Warn "Tag v$tag not found (404?) or download failed; falling back to main branch."
+                Remove-Item $tmp -ErrorAction SilentlyContinue
+                Invoke-WebRequest -UseBasicParsing -OutFile $tmp $mainUrl
+                $archive = $mainUrl
+            }
+        } else {
+            Log "No VERSION tag found; downloading main branch tarball."
+            Invoke-WebRequest -UseBasicParsing -OutFile $tmp $mainUrl
+        }
         New-Item -ItemType Directory -Path $RepoDir -Force | Out-Null
         tar -xzf $tmp -C $RepoDir --strip-components=1
         Remove-Item $tmp
