@@ -168,7 +168,12 @@ class MainWindow(QMainWindow):
 
     def _on_session_gui(self, msg: dict):
         self._server_screen = tuple(msg.get("screen", self.cfg.geometry))
-        self.decoder.reset()
+        # Build the decoder from the codec the server is actually encoding with
+        # (it may differ from the requested one when PyAV is unavailable and the
+        # server fell back to JPEG). This matters for h265, where the facade's
+        # first-packet guess would wrongly create an h264 decoder.
+        codec = msg.get("codec") or self.cfg.codec
+        self.decoder.reset(codec)
         self._set_status(
             f"сессия {msg.get('session_id')} | backend={msg.get('backend')} "
             f"| {self._server_screen[0]}x{self._server_screen[1]} | {msg.get('fps')} FPS"
@@ -247,9 +252,9 @@ class MainWindow(QMainWindow):
         dialog = HostKeyDialog(host, port, fingerprint, changed, self)
         result = dialog.exec()
         if result == HostKeyDialog.Accepted:
-            self.transport.confirm_host_key(True)
+            self.transport.confirm_host_key(True, dialog.remember())
         elif result == HostKeyDialog.Rejected:
-            self.transport.confirm_host_key(False)
+            self.transport.confirm_host_key(False, remember=False)
 
     def _on_files_dropped(self, files):
         if self.transport is None:

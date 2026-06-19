@@ -50,30 +50,39 @@ class BaseDecoder:
 
 
 class H264Decoder(BaseDecoder):
+    """H.264 / H.265 (HEVC) decoder via PyAV.
+
+    The server emits Annex-B bitstream packets (libx264 / libx265 output).
+    PyAV's ``decode(av.Packet(...))`` consumes Annex-B directly, so we do NOT
+    run the container demuxer (``CodecContext.parse``); that path buffers and
+    delays frames, and its result was being overwritten anyway. Decoding each
+    packet directly is the correct low-latency path for our wire format.
+    """
+
+    # Map our wire codec names to PyAV decoder names.
+    _CODEC_TO_AV = {"h264": "h264", "h265": "hevc", "hevc": "hevc"}
+
     def __init__(self, codec="h264"):
-        codec_name = "h264" if codec == "h264" else "hevc"
-        self._cc = av.CodecContext.create(codec_name, "r")
+        av_name = self._CODEC_TO_AV.get(codec, "h264")
+        self._cc = av.CodecContext.create(av_name, "r")
         self._w = self._h = 0
 
     def decode(self, payload: bytes, flags: int):
-        try:
-            packets = self._cc.parse(payload)
-        except Exception:
-            packets = []
-            try:
-                pkt = av.Packet(payload)
-                packets = [pkt]
-            except Exception:
-                return None
+        if not payload:
+            return None
         last = None
-        for pkt in packets:
-            try:
-                for frame in self._cc.decode(pkt):
-                    rgb = frame.to_ndarray(format="rgb24")
-                    self._h, self._w = rgb.shape[0], rgb.shape[1]
-                    last = (self._w, self._h, rgb.tobytes())
-            except Exception:
-                continue
+        try:
+            pkt = av.Packet(payload)
+        except Exception:
+            return None
+        try:
+            for frame in self._cc.decode(pkt):
+                rgb = frame.to_ndarray(format="rgb24")
+                self._h, self._w = rgb.shape[0], rgb.shape[1]
+                last = (self._w, self._h, rgb.tobytes())
+        except Exception:
+            # Partial NAL / not enough data yet: silently wait for more.
+            return None
         return last
 
     def close(self):
@@ -119,33 +128,44 @@ class JpegDeltaDecoder(BaseDecoder):
 
 
 def create_decoder(codec: str) -> BaseDecoder:
-    if codec in ("h264", "h265") and _HAVE_AV:
+    """Build the concrete decoder for a wire codec name.
+
+    ``h264`` / ``h265`` / ``hevc`` -> :class:`H264Decoder` (when PyAV is
+    importable); ``jpeg`` (or anything else, or PyAV missing) -> JPEG-delta.
+    """
+    if codec in ("h264", "h265", "hevc") and _HAVE_AV:
         try:
             return H264Decoder(codec)
         except Exception as exc:
-            log.warning("H.264 decoder init failed (%s); using JPEG", exc)
+            log.warning("decoder init for %s failed (%s); using JPEG", codec, exc)
     return JpegDeltaDecoder()
 
 
 class Decoder:
     """Auto-detecting decoder facade used by the GUI.
 
-    Picks the concrete decoder from the first received packet: a ``JD`` magic
-    prefix means JPEG-delta, anything else is treated as an H.264/H.265
-    bitstream. :meth:`reset` drops the inner decoder so the next packet
-    re-detects (used when a new session starts).
+    When the negotiated codec is known (from the ``session`` reply), pass it to
+    :meth:`reset` so the inner decoder is pre-built and no first-packet guessing
+    happens -- this matters for h265, where guessing would wrongly create an
+    h264 decoder. When the codec is unknown/``None`` the facade auto-detects
+    from the first packet (``JD`` magic -> JPEG, otherwise H.264).
     """
 
-    def __init__(self):
+    def __init__(self, codec: str | None = None):
         self._inner: BaseDecoder | None = None
+        self._codec: str | None = codec
+        if codec is not None:
+            self._inner = create_decoder(codec)
 
-    def reset(self):
+    def reset(self, codec: str | None = None):
         if self._inner is not None:
             try:
                 self._inner.close()
             except Exception:
                 pass
-        self._inner = None
+        self._codec = codec
+        # Pre-build when the codec is known; otherwise defer to first packet.
+        self._inner = create_decoder(codec) if codec else None
 
     def decode(self, payload: bytes, flags: int):
         if self._inner is None:

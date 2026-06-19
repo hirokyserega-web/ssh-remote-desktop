@@ -152,3 +152,46 @@ def test_tofu_mismatch_accepted_overwrites(key, store):
         assert entry.fingerprint == other.get_fingerprint()
 
     asyncio.run(_run())
+
+
+def test_tofu_unknown_accepted_not_remembered_not_persisted(key, store):
+    """accept + remember=False → trusted this connect, NOT persisted; next call asks again."""
+
+    async def _run():
+        asked = []
+
+        async def ask(host, port, fp, first_time):
+            asked.append(first_time)
+            return (True, False)  # accept, but do not remember
+
+        client = TofuClient(store, ask)
+        # First call: unknown, accepted without remembering.
+        assert await client.validate_host_public_key("myhost", "1.2.3.4", 22, key) is True
+        # Key must NOT have been written to the store.
+        assert store.lookup("myhost", 22) is None
+        # Second call: still unknown (not persisted), so it asks again.
+        assert await client.validate_host_public_key("myhost", "1.2.3.4", 22, key) is True
+        assert asked == [True, True]
+
+    asyncio.run(_run())
+
+
+def test_tofu_mismatch_accepted_not_remembered_not_overwritten(key, store):
+    """mismatch + accept + remember=False → trusted this connect, store keeps old key."""
+
+    async def _run():
+        other = asyncssh.generate_private_key("ssh-ed25519", "test-other")
+        store.add("myhost", 22, key)  # original key on record
+
+        async def ask(host, port, fp, first_time):
+            assert first_time is False
+            return (True, False)  # accept changed key, but do not remember
+
+        client = TofuClient(store, ask)
+        assert await client.validate_host_public_key("myhost", "1.2.3.4", 22, other) is True
+        # Store must still hold the ORIGINAL key (not overwritten).
+        entry = store.lookup("myhost", 22)
+        assert entry is not None
+        assert entry.fingerprint == key.get_fingerprint()
+
+    asyncio.run(_run())

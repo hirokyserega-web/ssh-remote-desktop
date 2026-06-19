@@ -17,6 +17,7 @@ from typing import Literal
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+from cryptography.hazmat.primitives import hashes
 
 KeyType = Literal["ed25519", "rsa"]
 
@@ -32,6 +33,16 @@ class KeyPair:
 
     def authorized_keys_line(self) -> str:
         return self.public_openssh
+
+    @property
+    def fingerprint(self) -> str:
+        """OpenSSH-style SHA256 fingerprint (``SHA256:base64``).
+
+        Computed from the raw public-key blob embedded in
+        :attr:`public_openssh` (the base64 segment after the key type). Matches
+        ``ssh-keygen -lf`` and :meth:`asyncssh.SSHKey.get_fingerprint`.
+        """
+        return public_key_fingerprint(self.public_openssh)
 
 
 def generate_keypair(
@@ -81,6 +92,28 @@ def generate_keypair(
         public_openssh=public_openssh,
         comment=comment,
     )
+
+
+def public_key_fingerprint(openssh_line: str) -> str:
+    """Compute the OpenSSH-style SHA256 fingerprint of a public key.
+
+    Takes an OpenSSH public key line like "ssh-ed25519 AAAA... comment",
+    parses the base64 blob, and returns "SHA256:base64(sha256(blob))".
+    """
+    parts = openssh_line.split()
+    if len(parts) < 2:
+        raise ValueError("Invalid OpenSSH public key line")
+    blob = parts[1]
+    from base64 import b64decode
+    blob_bytes = b64decode(blob)
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(blob_bytes)
+    digest_value = digest.finalize()
+    from base64 import b64encode
+    # OpenSSH / asyncssh strip the base64 padding '=' so the fingerprint is
+    # compact; match that exactly or comparisons against `ssh-keygen -lf`
+    # and asyncssh's get_fingerprint() fail.
+    return f"SHA256:{b64encode(digest_value).decode('ascii').rstrip('=')}"
 
 
 def write_keypair(
