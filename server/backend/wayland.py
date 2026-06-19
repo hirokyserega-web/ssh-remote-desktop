@@ -47,7 +47,11 @@ try:
 except Exception:  # pragma: no cover
     _HAVE_EVDEV = False
 
-from .wayland_pipewire import PipeWireUnavailable
+try:  # noqa: E402 -- after the soft-import blocks above
+    from .wayland_pipewire import PipeWireUnavailable
+except Exception:  # pragma: no cover
+    class PipeWireUnavailable(Exception):
+        pass
 
 
 # evdev relative-scroll codes.
@@ -114,7 +118,7 @@ class WaylandBackend(DisplayBackend):
         of the pipeline keeps working.
         """
         try:
-            from .wayland_pipewire import PipeWireCapture  # optional helper
+            from .wayland_pipewire import PipeWireCapture  # noqa: E402 optional helper
 
             self._pw = PipeWireCapture(self.env, self.geometry, self.cursor_mode)
             self._pw.start()

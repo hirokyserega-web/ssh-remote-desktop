@@ -1,13 +1,18 @@
-"""Connection dialog: host, user, auth method, session options."""
+"""Connection dialog: host, user, auth method, session options.
+
+On open it populates the host field with a dropdown of the last fe"""
 
 from __future__ import annotations
 
 import os
+import json
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QVBoxLayout, QHBoxLayout, QLineEdit, QSpinBox,
     QComboBox, QPushButton, QCheckBox, QLabel, QFileDialog, QDialogButtonBox,
 )
+from PySide6.QtWidgets import QMessageBox
 
 
 class ConnectDialog(QDialog):
@@ -21,7 +26,12 @@ class ConnectDialog(QDialog):
         root = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.host = QLineEdit(cfg.host)
+        self.host = QComboBox()
+        self.host.setEditable(True)
+        self.host.setInsertPolicy(QComboBox.NoInsert)
+        self.host.lineEdit().setText(cfg.host)
+        for h in self._load_recent_hosts():
+            self.host.addItem(h)
         form.addRow("Хост:", self.host)
 
         self.port = QSpinBox()
@@ -96,8 +106,37 @@ class ConnectDialog(QDialog):
         if path:
             self.key_path.setText(path)
 
+    def _recent_hosts_path(self) -> Path:
+        d = Path(os.path.expanduser("~/.config/ssh-remote-desktop"))
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "recent_hosts.json"
+
+    def _load_recent_hosts(self) -> list[str]:
+        try:
+            p = self._recent_hosts_path()
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return [str(h) for h in data][:10]
+        except Exception:
+            pass
+        return []
+
+    def _save_recent_host(self, host: str):
+        hosts = self._load_recent_hosts()
+        if host in hosts:
+            hosts.remove(host)
+        hosts.insert(0, host)
+        hosts = hosts[:10]
+        try:
+            self._recent_hosts_path().write_text(
+                json.dumps(hosts, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
     def apply_to_config(self):
-        self.cfg.host = self.host.text().strip()
+        self.cfg.host = self.host.currentText().strip()
         self.cfg.port = self.port.value()
         self.cfg.user = self.user.text().strip()
         self.cfg.auth = self.auth.currentText()
@@ -114,7 +153,16 @@ class ConnectDialog(QDialog):
         return self.cfg, self._password
 
     def accept(self):
+        host = self.host.currentText().strip()
+        user = self.user.text().strip()
+        if not host:
+            QMessageBox.warning(self, "Подключение", "Укажите хост.")
+            return
+        if not user:
+            QMessageBox.warning(self, "Подключение", "Укажите пользователя.")
+            return
         self.apply_to_config()
+        self._save_recent_host(host)
         super().accept()
 
     def password(self) -> str | None:

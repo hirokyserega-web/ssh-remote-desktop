@@ -7,6 +7,7 @@ from .keygen import (
     public_key_openssh,
     authorized_keys_line,
     write_keypair,
+    public_key_fingerprint,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "public_key_openssh",
     "authorized_keys_line",
     "write_keypair",
+    "public_key_fingerprint",
 ]

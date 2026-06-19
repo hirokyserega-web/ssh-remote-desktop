@@ -269,11 +269,36 @@ class X11Backend(DisplayBackend):
         keycode = self._dpy.keysym_to_keycode(sym)
         if not keycode:
             return
-        # Press modifiers first (on key-down), release after (on key-up handled
-        # by the client sending explicit modifier key events as well).
-        evt = X.KeyPress if down else X.KeyRelease
-        xtest.fake_input(self._dpy, evt, detail=keycode)
+        # Map each modifier alias ("ctrl"/"shift"/"alt"/"meta"/"super") to an
+        # X keycode and synthesise the full chord via XTEST. The event ordering
+        # is factored into _chord_events so it can be unit-tested without a
+        # live X display (see tests/test_x11_key_chord.py).
+        mod_keycodes: list[int] = []
+        for mod_name in mods:
+            mod_sym = keysym_to_x11(mod_name)
+            if mod_sym is None:
+                continue
+            mod_kc = self._dpy.keysym_to_keycode(mod_sym)
+            if mod_kc:
+                mod_keycodes.append(mod_kc)
+        for evt_name, kc in self._chord_events(keycode, mod_keycodes, down):
+            xevt = X.KeyPress if evt_name == "press" else X.KeyRelease
+            xtest.fake_input(self._dpy, xevt, detail=kc)
         self._dpy.sync()
+
+    @staticmethod
+    def _chord_events(keycode: int, mod_keycodes, down: bool):
+        """Ordered (event_name, keycode) XTEST events for a key + modifiers.
+
+        On key-down the modifiers are pressed first (in given order), then the
+        main key; on key-up the main key is released first, then the modifiers
+        in reverse. ``event_name`` is ``"press"`` or ``"release"``. Pure
+        function -- no X server needed -- so the ordering is unit-testable.
+        """
+        if down:
+            return ([("press", kc) for kc in mod_keycodes]
+                    + [("press", keycode)])
+        return [("release", keycode)] + [("release", kc) for kc in reversed(mod_keycodes)]
 
     # -- clipboard ---------------------------------------------------------
     def get_clipboard_text(self) -> str | None:

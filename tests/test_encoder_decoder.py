@@ -71,3 +71,48 @@ def test_h264_roundtrip_when_av_available():
             assert len(rgb) == 160 * 120 * 3
             return
     pytest.skip("decoder did not emit a frame (likely empty GOP)")
+
+
+def _hxx_roundtrip(codec):
+    """Shared helper: encode several frames with `codec`, decode via the
+    Decoder facade built from session.codec, assert we get a frame back."""
+    enc = create_encoder(codec, 160, 120, fps=10, bitrate_kbps=1000)
+    # Build the decoder from the negotiated codec (as the GUI does after the
+    # session reply), instead of relying on first-packet auto-detection.
+    dec = Decoder()
+    dec.reset(codec)
+    got_frame = False
+    for fill in (10, 80, 160, 220):
+        out = enc.encode(_make_frame(160, 120, fill=fill))
+        for data, _ in out:
+            result = dec.decode(data, 0)
+            if result is not None:
+                w, h, rgb = result
+                assert (w, h) == (160, 120)
+                assert len(rgb) == 160 * 120 * 3
+                got_frame = True
+    assert got_frame, f"{codec} decoder never emitted a frame"
+
+
+def test_h265_roundtrip_when_av_available():
+    pytest.importorskip("av")
+    _hxx_roundtrip("h265")
+
+
+def test_decoder_reset_codec_selects_hevc():
+    """Decoder.reset('h265') must build an hevc decoder, not an h264 one."""
+    pytest.importorskip("av")
+    from client.decoder import H264Decoder
+    dec = Decoder()
+    dec.reset("h265")
+    # The facade should have pre-built an H264Decoder (which maps h265->hevc).
+    assert isinstance(dec._inner, H264Decoder)
+    # And the underlying codec context must be hevc, not h264.
+    assert dec._inner._cc.codec.name == "hevc"
+
+
+def test_decoder_reset_codec_none_keeps_autodetect():
+    """Decoder.reset() with no codec falls back to first-packet auto-detection."""
+    dec = Decoder()
+    dec.reset()
+    assert dec._inner is None

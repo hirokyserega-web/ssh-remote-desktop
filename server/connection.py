@@ -135,6 +135,7 @@ class ConnectionHandler:
         """Lower or raise bitrate/FPS based on client-reported loss/latency."""
         loss = float(msg.get("loss", 0.0))
         rtt = float(msg.get("rtt_ms", 0.0))
+        old_fps = self._fps
         if loss > 0.05 or rtt > 250:
             self._bitrate = max(800, int(self._bitrate * 0.8))
             self._fps = max(10, self._fps - 5)
@@ -143,6 +144,12 @@ class ConnectionHandler:
             self._fps = min(self.cfg.fps, self._fps + 2)
         if self.encoder is not None:
             self.encoder.set_bitrate(self._bitrate)
+            # Push the new FPS to the encoder too, not just the capture loop
+            # period. Without this the encoder keeps its old frame-rate (and
+            # thus its GOP / timestamp pacing) even after _video_loop picks up
+            # the new 1/fps sleep, so adaptation only half-works.
+            if self._fps != old_fps:
+                self.encoder.set_fps(self._fps)
 
     # -- video loop --------------------------------------------------------
     async def _video_loop(self):

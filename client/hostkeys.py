@@ -32,7 +32,6 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
 
 import asyncssh
 
@@ -170,12 +169,15 @@ def _key_blob_b64(key) -> str:
 # ---------------------------------------------------------------------------
 # SSHClient implementing TOFU
 # ---------------------------------------------------------------------------
-# A confirmation callback receives the host, port, fingerprint and a bool
+# A confirmation/ask callback receives the host, port, fingerprint and a bool
 # indicating whether this is a *first-time* ask (unknown host) or a *changed*
-# key (potential MITM). It returns True to accept, False to reject. For a
-# changed key the GUI should present a scarier dialog and ideally require an
-# explicit "I understand the risk" checkbox.
-AskFn = "Callable[[str, int, str, bool], Awaitable[bool]]"
+# key (potential MITM). It returns ``(accepted, remember)``: accept=True trusts
+# the key for this connection; remember=True additionally persists it to the
+# known-hosts store so the user is not asked again next time. A user who
+# unchecks "remember" gets a one-time trust (the key is validated this session
+# but not saved). For backward compatibility a plain bool return is treated as
+# ``(bool, True)``.
+AskFn = "Callable[[str, int, str, bool], Awaitable[tuple[bool, bool] | bool]]"
 ConfirmFn = AskFn
 
 
@@ -193,7 +195,7 @@ class TofuClient(asyncssh.SSHClient):
     (see :class:`client.transport.Transport`).
     """
 
-    def __init__(self, store: "KnownHostsStore", ask: "Callable[[str, int, str, bool], Awaitable[bool]]"):
+    def __init__(self, store: "KnownHostsStore", ask: ConfirmFn):
         self._store = store
         self._ask = ask
         # Resolved at connection_made time so the callback has them.
@@ -205,6 +207,18 @@ class TofuClient(asyncssh.SSHClient):
         # up; grab host/port here as a fallback for the validation callback.
         info = conn.get_extra_info("peername") or ("", 0)
         self._host, self._port = (info[0], info[1]) if info else ("", 22)
+
+    async def _ask_tuple(self, host: str, port: int, fp: str, first_time: bool) -> tuple[bool, bool]:
+        """Call ``ask`` and normalize its return to ``(accepted, remember)``.
+
+        Tolerates a plain ``bool`` return (treated as ``(bool, True)``) so older
+        callers keep working.
+        """
+        res = await self._ask(host, port, fp, first_time)
+        if isinstance(res, tuple):
+            accepted, remember = res
+            return bool(accepted), bool(remember)
+        return bool(res), True
 
     async def validate_host_public_key(self, host: str, addr: str, port: int, key) -> bool:
         """Return True iff the host key is trusted under TOFU.
@@ -221,14 +235,19 @@ class TofuClient(asyncssh.SSHClient):
         if known is None:
             # First contact: ask the user.
             try:
-                accepted = bool(await self._ask(host, port, fp, True))
+                accepted, remember = await self._ask_tuple(host, port, fp, True)
             except Exception as exc:
                 log.warning("host-key ask callback raised: %s", exc)
-                accepted = False
+                accepted, remember = False, False
             if not accepted:
                 raise HostKeyRejected(f"unknown host {host}:{port} key rejected by user")
-            self._store.add(host, port, key)
-            log.info("TOFU: recorded host key for %s:%d (%s)", host, port, fp)
+            # Persist only when the user opted to remember; otherwise trust for
+            # this connection only (next connect asks again).
+            if remember:
+                self._store.add(host, port, key)
+                log.info("TOFU: recorded host key for %s:%d (%s)", host, port, fp)
+            else:
+                log.info("TOFU: one-time trust for %s:%d (%s) (not remembered)", host, port, fp)
             return True
 
         # Known host: compare the recorded blob to the one presented.
@@ -238,17 +257,20 @@ class TofuClient(asyncssh.SSHClient):
 
         # Mismatch: the dangerous case. Ask again with first_time=False so the
         # GUI can show a sterner warning. If the user accepts, overwrite the
-        # stored entry (they have explicitly chosen to trust the new key).
+        # stored entry only when they chose to remember the new key.
         try:
-            accepted = bool(await self._ask(host, port, fp, False))
+            accepted, remember = await self._ask_tuple(host, port, fp, False)
         except Exception as exc:
             log.warning("host-key ask callback raised: %s", exc)
-            accepted = False
+            accepted, remember = False, False
         if not accepted:
             raise HostKeyMismatch(
                 f"host key for {host}:{port} changed (expected {known.fingerprint}, "
                 f"got {fp})"
             )
-        self._store.replace(host, port, key)
-        log.warning("TOFU: user accepted CHANGED host key for %s:%d (%s)", host, port, fp)
+        if remember:
+            self._store.replace(host, port, key)
+            log.warning("TOFU: user accepted CHANGED host key for %s:%d (%s)", host, port, fp)
+        else:
+            log.warning("TOFU: one-time trust for CHANGED key %s:%d (%s) (not remembered)", host, port, fp)
         return True

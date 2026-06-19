@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QGuiApplication
 
-from crypto import generate_keypair, write_keypair, authorized_keys_line
+from crypto import generate_keypair, write_keypair, authorized_keys_line, public_key_fingerprint
 
 
 class KeyManagerDialog(QDialog):
@@ -88,6 +88,12 @@ class KeyManagerDialog(QDialog):
         self.pub_view.setMaximumHeight(80)
         root.addWidget(self.pub_view)
 
+        root.addWidget(QLabel("Отпечаток (SHA256):"))
+        self.fp_view = QLineEdit()
+        self.fp_view.setReadOnly(True)
+        self.fp_view.setStyleSheet("font-family: monospace;")
+        root.addWidget(self.fp_view)
+
         copy_row = QHBoxLayout()
         copy_pub = QPushButton("Копировать публичный ключ")
         copy_pub.clicked.connect(self._copy_pub)
@@ -127,6 +133,10 @@ class KeyManagerDialog(QDialog):
             return
         self._keypair = kp
         self.pub_view.setPlainText(kp.public_openssh)
+        try:
+            self.fp_view.setText(public_key_fingerprint(kp.public_openssh))
+        except Exception:
+            self.fp_view.setText("")
         line = authorized_keys_line(kp.public_openssh)
         self.cmd_view.setPlainText(
             "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
@@ -158,10 +168,6 @@ class KeyManagerDialog(QDialog):
 
     def _copy_install_cmd(self):
         QGuiApplication.clipboard().setText(self.cmd_view.toPlainText())
-
-
-# Alias used across the GUI.
-KeysDialog = KeyManagerDialog
 
 
 # Alias used across the GUI.

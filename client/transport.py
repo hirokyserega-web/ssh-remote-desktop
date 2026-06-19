@@ -39,13 +39,14 @@ from .hostkeys import (
 log = logging.getLogger("rd.client.transport")
 
 
-async def _noninteractive_ask(host: str, port: int, fingerprint: str, first_time: bool) -> bool:
+async def _noninteractive_ask(host: str, port: int, fingerprint: str, first_time: bool) -> tuple[bool, bool]:
     """Headless default TOFU policy used when no GUI callback is wired.
 
     Refuses unknown/changed keys so programmatic use never silently trusts a
     new host. Operators who want auto-trust can pre-seed the known-hosts file.
+    Returns ``(accepted, remember)``; on reject both are False.
     """
-    return False
+    return False, False
 
 
 class Transport:
@@ -76,6 +77,7 @@ class Transport:
         # resolves it.
         self._tofu_event: asyncio.Event | None = None
         self._tofu_result: bool = False
+        self._tofu_remember: bool = True
 
         # RTT / stats measurement (P1 4.1): each heartbeat sends a ping with a
         # millisecond timestamp; the echoed pong yields a round-trip sample.
@@ -86,7 +88,10 @@ class Transport:
         self._pings_sent: int = 0
         self._pongs_recv: int = 0
         self._heartbeat_tick: int = 0
-        self.view_
+        # Window-size provider set by the GUI (returns (w, h) of the desktop
+        # view widget). Public so MainWindow can assign it directly. When None
+        # (headless / no GUI), _handshake falls back to cfg.geometry explicitly.
+        self.view_size_provider: "Callable[[], tuple[int, int]] | None" = None
 
         self.session_info: dict | None = None
 
@@ -246,34 +251,42 @@ class Transport:
                 opts["passphrase"] = self._password
         return opts
 
-    async def _ask_host_key(self, host: str, port: int, fingerprint: str, first_time: bool) -> bool:
+    async def _ask_host_key(self, host: str, port: int, fingerprint: str, first_time: bool) -> tuple[bool, bool]:
         """Notify the GUI and block on the asyncio loop until it answers.
 
         The GUI's on_host_key callback is fire-and-forget (it emits a Qt signal
         and returns immediately); the actual dialog runs on the Qt thread and
         calls back via :meth:`confirm_host_key`, which resolves ``_tofu_event``.
+        Returns ``(accepted, remember)``.
         """
         self._tofu_event = asyncio.Event()
         self.on_host_key(host, port, fingerprint, first_time)
         await self._tofu_event.wait()
-        return self._tofu_result
+        return self._tofu_result, self._tofu_remember
 
-    def confirm_host_key(self, accepted: bool) -> None:
-        """Resolve a pending TOFU question (called from the GUI thread)."""
+    def confirm_host_key(self, accepted: bool, remember: bool = True) -> None:
+        """Resolve a pending TOFU question (called from the GUI thread).
+
+        ``remember`` is forwarded to :class:`TofuClient` so an unchecked
+        "remember" checkbox trusts the key for this connection only without
+        persisting it.
+        """
         if self._tofu_event is not None and self._loop is not None:
             self._tofu_result = accepted
+            self._tofu_remember = remember
             self._loop.call_soon_threadsafe(self._tofu_event.set)
 
     async def _handshake(self):
-        # Ask the GUI for the current view size (falls back to session geometry
-        # when no provider is set, e.g. headless). With PROTO 2 the server
-        # scales mouse coords from normalized floats, so this is advisory -- the
+        # Ask the GUI for the current view size. With PROTO 2 the server scales
+        # mouse coords from normalized floats, so this is advisory -- the
         # authoritative size arrives in the resize message on connect -- but we
-        # send the real widget size instead of the session geometry so the
-        # server's initial _client_view is not misleading.
-        try:
-            view = tuple(self._view_size_provider())
-        except Exception:
+        # send the real widget size so the server's initial _client_view is not
+        # misleading. When no provider is set (headless), use cfg.geometry.
+        # We do NOT wrap the provider call in try/except: a buggy provider
+        # should surface as a real error, not be silently masked.
+        if self.view_size_provider is not None:
+            view = tuple(self.view_size_provider())
+        else:
             view = tuple(self.cfg.geometry)
         hello = messages.hello(
             codec=self.cfg.codec,
