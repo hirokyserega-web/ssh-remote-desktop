@@ -104,14 +104,22 @@ class X11Backend(DisplayBackend):
             from Xlib.ext import damage  # noqa: F401
 
             if self._dpy.has_extension("DAMAGE"):
-                self._dpy.damage_create  # type: ignore[attr-defined]
+                # python-xlib's damage_create(level) creates a Damage object on
+                # the drawable; the level selects how the server reports
+                # changes. BoundingBox gives one rect per damaged region --
+                # cheaper than RawRectangles (which emits every sub-rect) and
+                # pairs well with the JPEG tile encoder's rect merge.
+                self._dpy.damage.query_version(1, 1)
                 self._damage = self._root.damage_create(
-                    self._dpy.extension_event.DamageNotify  # type: ignore
-                ) if hasattr(self._root, "damage_create") else None
+                    damage.DamageReportBoundingBox
+                )
                 self._have_damage = self._damage is not None
+                if self._have_damage:
+                    log.info("XDamage tracking enabled (bounding box)")
         except Exception as exc:  # pragma: no cover
             log.debug("XDamage unavailable: %s", exc)
             self._have_damage = False
+            self._damage = None
 
     def _init_xfixes(self):
         try:
@@ -157,16 +165,31 @@ class X11Backend(DisplayBackend):
         )
 
     def _collect_damage(self):
-        if not self._have_damage or self._dpy is None:
+        """Drain pending DamageNotify events and clear the damage region.
+
+        Returns a list of ``(x, y, w, h)`` rects, or ``None`` when damage
+        tracking is off (so the caller falls back to a full / tile-diff frame).
+        After draining we call ``damage_subtract`` to clear the region so the
+        next capture only reports newly-damaged areas.
+        """
+        if not self._have_damage or self._dpy is None or self._damage is None:
             return None  # whole-frame dirty
-        rects = []
+        rects: list[tuple[int, int, int, int]] = []
         try:
+            from Xlib.ext import damage as _xdamage
             n = self._dpy.pending_events()
             for _ in range(n):
                 ev = self._dpy.next_event()
+                if getattr(ev, "type", None) != _xdamage.DamageNotify:
+                    continue
                 area = getattr(ev, "area", None)
                 if area is not None:
                     rects.append((area.x, area.y, area.width, area.height))
+            # Clear the accumulated damage so we don't re-report old rects.
+            try:
+                _xdamage.damage_subtract(self._damage, None, None)
+            except Exception:
+                pass
         except Exception:
             return None
         return rects or None

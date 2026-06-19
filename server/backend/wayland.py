@@ -47,6 +47,8 @@ try:
 except Exception:  # pragma: no cover
     _HAVE_EVDEV = False
 
+from .wayland_pipewire import PipeWireUnavailable
+
 
 # evdev relative-scroll codes.
 class _UInputDevices:
@@ -119,8 +121,12 @@ class WaylandBackend(DisplayBackend):
             size = self._pw.size()
             if size:
                 self._w, self._h = size
+        except PipeWireUnavailable:
+            # Expected on headless / non-portal hosts; degrade gracefully.
+            log.info("PipeWire ScreenCast unavailable (no portal/daemon); using placeholder frames")
+            self._pw = None
         except Exception as exc:
-            log.info("PipeWire capture unavailable, using placeholder: %s", exc)
+            log.warning("PipeWire capture init error, using placeholder: %s", exc)
             self._pw = None
 
     def stop(self) -> None:

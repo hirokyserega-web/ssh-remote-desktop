@@ -31,6 +31,7 @@ from .desktop_view import DesktopView
 from .connect_dialog import ConnectDialog
 from .files_dialog import FilesDialog
 from .keys_dialog import KeysDialog
+from .host_key_dialog import HostKeyDialog
 from .files import SFTPTransfer
 
 log = logging.getLogger("rd.client.window")
@@ -45,6 +46,7 @@ class _Bridge(QObject):
     session = Signal(dict)
     clipboard = Signal(dict)
     state = Signal(str, str)
+    host_key = Signal(str, int, str, bool)
 
 
 class MainWindow(QMainWindow):
@@ -69,6 +71,7 @@ class MainWindow(QMainWindow):
         self.bridge.session.connect(self._on_session_gui)
         self.bridge.clipboard.connect(self._on_clipboard_gui)
         self.bridge.state.connect(self._on_state_gui)
+        self.bridge.host_key.connect(self._on_host_key_gui)
 
         self._build_toolbar()
         self.setStatusBar(QStatusBar())
@@ -140,10 +143,12 @@ class MainWindow(QMainWindow):
 
     def _start_transport(self, password):
         self.transport = Transport(self.cfg, password=password)
+        self.transport.view_size_provider = self._view_size
         self.transport.on_video = lambda data, flags: self.bridge.video.emit(data, flags)
         self.transport.on_session = lambda msg: self.bridge.session.emit(msg)
         self.transport.on_clipboard = lambda msg: self.bridge.clipboard.emit(msg)
         self.transport.on_state = lambda s, d: self.bridge.state.emit(s, d)
+        self.transport.on_host_key = lambda host, port, fingerprint, changed: self.bridge.host_key.emit(host, port, fingerprint, changed)
         self.transport.start()
         self.act_connect.setText("Отключиться")
 
@@ -217,7 +222,7 @@ class MainWindow(QMainWindow):
 
     def _heartbeat(self):
         if self.transport is not None:
-            self.transport.send_control(messages.ping())
+            self.transport.heartbeat()
 
     def _set_status(self, text: str):
         self.statusBar().showMessage(f"● {text}")
@@ -237,6 +242,14 @@ class MainWindow(QMainWindow):
 
     def _open_keys(self):
         KeysDialog(self.cfg, self).exec()
+
+    def _on_host_key_gui(self, host, port, fingerprint, changed):
+        dialog = HostKeyDialog(host, port, fingerprint, changed, self)
+        result = dialog.exec()
+        if result == HostKeyDialog.Accepted:
+            self.transport.confirm_host_key(True)
+        elif result == HostKeyDialog.Rejected:
+            self.transport.confirm_host_key(False)
 
     def _on_files_dropped(self, files):
         if self.transport is None:

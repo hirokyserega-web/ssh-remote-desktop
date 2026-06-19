@@ -83,12 +83,16 @@ class DesktopView(QWidget):
     def _to_server(self, pos: QPointF):
         x0, y0, w, h = self._draw_rect
         if w <= 0 or h <= 0:
-            return 0, 0
+            return 0.0, 0.0
         rx = (pos.x() - x0) / w
         ry = (pos.y() - y0) / h
         rx = min(max(rx, 0.0), 1.0)
         ry = min(max(ry, 0.0), 1.0)
-        return int(rx * (self._server_w - 1)), int(ry * (self._server_h - 1))
+        # Normalized fractions in [0.0, 1.0] -- the server maps these to its
+        # actual screen pixels (single scaling point, see server
+        # ConnectionHandler._scale_coords). Returning pixel ints here was a bug:
+        # the server re-scaled them and double-applied the geometry ratio.
+        return round(rx, 6), round(ry, 6)
 
     # -- mouse -------------------------------------------------------------
     def mouseMoveEvent(self, ev):

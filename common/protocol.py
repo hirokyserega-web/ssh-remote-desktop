@@ -23,7 +23,19 @@ from enum import IntEnum, IntFlag
 #: Bumped whenever the wire format changes in an incompatible way. The value is
 #: exchanged in the ``hello`` handshake and both peers refuse to continue when
 #: the major versions disagree.
-PROTO_VERSION = 1
+#:
+#: Version history:
+#:   1 -- initial wire format.
+#:   2 -- ``mouse_move`` coordinates changed from server-pixel integers to
+#:        normalized floats in ``[0.0, 1.0]`` (single scaling, on the server).
+#:        ``session`` reply now carries the negotiated ``codec``.
+PROTO_VERSION = 2
+
+#: Peers we still accept in the handshake. A peer advertising a proto outside
+#: this set is rejected with an ``unsupported proto`` error. The
+#: ``mouse_move`` semantics differ between 1 and 2, so once we ship v2 we drop
+#: v1 -- both sides upgrade together in this single codebase.
+ACCEPTED_PROTOS = frozenset({2})
 
 #: ``!BBI`` -> type (u8), flags (u8), length (u32 big-endian).
 FRAME_HEADER = struct.Struct("!BBI")
@@ -65,12 +77,15 @@ class Flags(IntFlag):
 # ---------------------------------------------------------------------------
 # Codec identifiers used in the handshake / session messages.
 # ---------------------------------------------------------------------------
+#: NOTE: ``webp`` was removed in proto v2 -- it was advertised in VALID_CODECS
+#: and the CLI but had no encoder/decoder implementation and was never
+#: selectable in the connect dialog, so keeping it was misleading. Adding it
+#: back later means a real encoder + decoder + dialog entry, not just a name.
 CODEC_H264 = "h264"
 CODEC_H265 = "h265"
 CODEC_JPEG = "jpeg"
-CODEC_WEBP = "webp"
 
-VALID_CODECS = frozenset({CODEC_H264, CODEC_H265, CODEC_JPEG, CODEC_WEBP})
+VALID_CODECS = frozenset({CODEC_H264, CODEC_H265, CODEC_JPEG})
 
 # Backend identifiers reported by the server.
 BACKEND_X11 = "x11"

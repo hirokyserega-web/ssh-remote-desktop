@@ -109,41 +109,26 @@ sudo -E .venv/bin/python -m server --port 2222
 
 ## Установка
 
-### В одну строку
+Пакет разбит на опциональные extras, чтобы клиент можно было установить на
+Windows/macOS без Linux-зависимостей, а сервер — на Linux без GUI-библиотек.
 
-Самый быстрый путь — установщики в `scripts/`. Они сами ставят системные з
+### Только клиент (Windows / macOS / Linux)
 
 ```bash
-git clone https://github.com/hirokyserega-web/ssh-remote-desktop.git
-cd ssh-remote-desktop
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install .[client]
 ```
 
-**`requirements.txt`:**
+### Сервер (Linux: X11 + Wayland)
 
-```
-asyncssh>=2.23
-cryptography>=44
-bcrypt>=4.2
-numpy>=2.2
-msgpack>=1.1
-pillow>=11
-# GUI/клиент:
-PySide6>=6.7
-# Кодирование видео (опционально, иначе используется JPEG-delta):
-av>=12
-# Linux-сервер, X11-захват (опционально):
-python-xlib>=0.33
-mss>=9
-evdev>=1.4     # Wayland uinput
+```bash
+pip install .[server]
 ```
 
-Если каких-то библиотек не хватает, приложение продолжит работать: каждый
-компонент проверяет наличие зависимости и переходит на фолбэк-путь
-(см. `file 'server/backend/x11.py'`, `file 'server/backend/wayland.py'`,
-`file 'server/encoder.py'`).
+### Всё сразу (dev / Linux-десктоп)
+
+```bash
+pip install -e .[client,server,dev]
+```
 
 ---
 

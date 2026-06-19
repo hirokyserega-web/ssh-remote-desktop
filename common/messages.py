@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover - msgpack simply not installed
     msgpack = None  # type: ignore
     _HAVE_MSGPACK = False
 
-from .protocol import Flags
+from .protocol import Flags, PROTO_VERSION
 
 
 def prefers_msgpack() -> bool:
@@ -60,7 +60,7 @@ def hello(
     new_session: bool = True,
     geometry: tuple[int, int] | None = None,
     persistent: bool = False,
-    proto: int = 1,
+    proto: int = PROTO_VERSION,
 ) -> dict:
     return {
         "t": "hello",
@@ -84,7 +84,16 @@ def session(
     screen: tuple[int, int],
     fps: int,
     cursor: str,
+    codec: str | None = None,
+    proto: int = PROTO_VERSION,
 ) -> dict:
+    """Server -> client reply after the handshake.
+
+    ``codec`` is the codec the server is actually encoding with (it may differ
+    from the requested one when PyAV is unavailable and the server fell back to
+    JPEG); the client uses it to build the matching decoder. ``proto`` echoes
+    the negotiated protocol version.
+    """
     return {
         "t": "session",
         "session_id": session_id,
@@ -94,6 +103,8 @@ def session(
         "screen": list(screen),
         "fps": fps,
         "cursor": cursor,
+        "codec": codec,
+        "proto": proto,
     }
 
 
@@ -117,11 +128,20 @@ def clipboard(fmt: str, data, origin: str) -> dict:
     return {"t": "clipboard", "format": fmt, "data": data, "origin": origin}
 
 
-def ping() -> dict:
-    return {"t": "ping", "ts": int(time.time())}
+def ping(ts: int | None = None) -> dict:
+    """Client -> server heartbeat.
+
+    ``ts`` is a high-resolution client timestamp (``time.monotonic``) in
+    milliseconds so the server can echo it back in :func:`pong` and the client
+    can measure round-trip time for adaptive bitrate/FPS. Falls back to
+    ``time.time`` seconds for backward compatibility when called without arg.
+    """
+    if ts is None:
+        return {"t": "ping", "ts": int(time.time())}
+    return {"t": "ping", "ts": float(ts)}
 
 
-def pong(ts: int) -> dict:
+def pong(ts) -> dict:
     return {"t": "pong", "ts": ts}
 
 

@@ -18,7 +18,7 @@ import logging
 
 from common import messages
 from common.framing import AsyncByteStream, Frame, Multiplexer
-from common.protocol import Channel, Flags
+from common.protocol import Channel, Flags, ACCEPTED_PROTOS
 
 from .encoder import create_encoder
 from .session import Session, UserInfo
@@ -70,7 +70,7 @@ class ConnectionHandler:
 
     async def _handle_hello(self, msg: dict):
         proto = int(msg.get("proto", 1))
-        if proto != 1:
+        if proto not in ACCEPTED_PROTOS:
             self._send_control({"t": "error", "msg": f"unsupported proto {proto}"})
             self._stop_evt.set()
             return
@@ -78,6 +78,11 @@ class ConnectionHandler:
         self._client_view = tuple(msg.get("view") or geometry)
         persistent = bool(msg.get("persistent", self.cfg.persistent_default))
         codec = msg.get("codec", self.cfg.codec)
+        # If the client asked for a codec we cannot serve (e.g. h265 without
+        # PyAV, or webp which we do not encode yet), fall back to the server
+        # default and tell the client via the session reply so its decoder
+        # auto-dects the right format.
+        codec = self._negotiate_codec(codec)
 
         try:
             user = UserInfo(self.username)
@@ -101,11 +106,30 @@ class ConnectionHandler:
             wayland_display=self.session.wayland_display,
             screen=(sw, sh), fps=self._fps,
             cursor=self.cfg.cursor_mode,
+            codec=codec,
         ))
         self._running = True
         self._video_task = asyncio.create_task(self._video_loop())
         if self.cfg.clipboard_enabled:
             self._clip_task = asyncio.create_task(self._clipboard_loop())
+
+    def _negotiate_codec(self, requested: str) -> str:
+        """Return a codec we can actually encode, falling back to jpeg."""
+        from .encoder import create_encoder as _ce  # noqa: F401  (capability probe)
+        # We accept whatever the client asked for if the encoder factory can
+        # build it; otherwise we drop to jpeg (always available via Pillow).
+        if requested in ("h264", "h265"):
+            try:
+                import av  # noqa: F401
+                import numpy  # noqa: F401
+                return requested
+            except Exception:
+                return "jpeg"
+        if requested in ("jpeg", "webp"):
+            # webp is not yet implemented as a wire codec; treat as jpeg so the
+            # client still gets a working stream instead of an error.
+            return "jpeg"
+        return self.cfg.codec
 
     def _adapt(self, msg: dict):
         """Lower or raise bitrate/FPS based on client-reported loss/latency."""
@@ -170,7 +194,21 @@ class ConnectionHandler:
                                tuple(msg.get("mods", [])))
 
     def _scale_coords(self, x, y):
+        """Map a client coordinate to server-screen pixels.
+
+        Since PROTO_VERSION 2 the client sends NORMALIZED floats in ``[0, 1]``
+        (the client already did the widget->draw-rect mapping). We multiply by
+        the server screen size here -- the single scaling point. Legacy integer
+        pixel coordinates (proto 1) are handled by the integer branch below.
+        """
         sw, sh = self.session.backend.screen_size()
+        if isinstance(x, float) or isinstance(y, float):
+            fx = float(x)
+            fy = float(y)
+            fx = min(max(fx, 0.0), 1.0)
+            fy = min(max(fy, 0.0), 1.0)
+            return int(fx * max(1, sw - 1)), int(fy * max(1, sh - 1))
+        # Legacy integer coordinates: scale from the reported client view size.
         vw, vh = getattr(self, "_client_view", (sw, sh))
         if vw and vh:
             return int(x * sw / vw), int(y * sh / vh)

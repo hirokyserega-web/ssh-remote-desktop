@@ -9,15 +9,61 @@ description = "SSH-only remote desktop (X11 + Wayland)"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
+# Core (protocol, transport, crypto): needed by BOTH client and server on
+# EVERY platform (Linux, macOS, Windows). Kept free of any GUI / display deps
+# so `pip install ssh-remote-desktop` works on Windows/macOS for the client.
 dependencies = [
     "asyncssh>=2.23",
     "cryptography>=44",
     "bcrypt>=4.2",
     "numpy>=1.26",
-    "Pillow>=10",
-    "av>=11",
-    "PySide6>=6.6",
     "msgpack>=1.0",
+]
+
+# Optional, platform-tagged dependency groups. Install the ones you need:
+#   client (any OS)        -> pip install "ssh-remote-desktop[client]"
+#   server on Linux (X11)  -> pip install "ssh-remote-desktop[server,server-x11]"
+#   server on Linux (Wayl) -> pip install "ssh-remote-desktop[server,server-wayland]"
+# JPEG-only encode/decode works with just Pillow; H.264/H.265 needs PyAV.
+[project.optional-dependencies]
+client = [
+    "PySide6>=6.6",
+    "Pillow>=10",
+]
+jpeg = [
+    "Pillow>=10",
+]
+h264 = [
+    "av>=11",
+    "Pillow>=10",
+]
+server = [
+    "Pillow>=10",
+]
+server-x11 = [
+    "python-xlib>=0.33 ; sys_platform == 'linux'",
+    "mss>=9 ; sys_platform == 'linux'",
+]
+server-wayland = [
+    "python-evdev>=1.9 ; sys_platform == 'linux'",
+    "pywayland>=0.5 ; sys_platform == 'linux'",
+    "dbus-next>=0.2 ; sys_platform == 'linux'",
+]
+# Convenience: everything for a Linux host running both client and server.
+linux-full = [
+    "PySide6>=6.6",
+    "av>=11",
+    "Pillow>=10",
+    "python-xlib>=0.33",
+    "mss>=9",
+    "python-evdev>=1.9",
+    "pywayland>=0.5",
+    "dbus-next>=0.2",
+]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
