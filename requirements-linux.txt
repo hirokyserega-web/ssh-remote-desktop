@@ -1,0 +1,6 @@
+# Linux-only runtime dependencies.
+# These packages have no Windows/macOS wheels and are installed only on Linux.
+# CI installs this file on linux jobs; install.sh sources it on Linux hosts.
+evdev>=1.7
+pywayland>=0.4.13
+dbus-next>=0.2

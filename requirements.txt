@@ -1,3 +1,5 @@
+# Cross-platform runtime dependencies.
+# Installed on every OS (Linux, Windows, macOS).
 asyncssh>=2.23
 cryptography>=44
 bcrypt>=4.2
@@ -7,8 +9,13 @@ pillow>=11
 async-timeout>=5
 python-xlib>=0.33
 mss>=10.0
-pyav>=14.0
+av>=14.0
 PySide6>=6.8
-python-evdev>=1.9
-pywayland>=0.5
+
+# Linux-only runtime dependencies (keyboard/evdev + Wayland + D-Bus).
+# These packages ship no Windows/macOS wheels, so installers split them out
+# and CI gates them behind `sysplatform == 'linux'`.
+# See requirements-linux.txt for the pinned set used on Linux.
+evdev>=1.7
+pywayland>=0.4.13
 dbus-next>=0.2

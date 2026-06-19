@@ -45,8 +45,8 @@ server-x11 = [
     "mss>=9 ; sys_platform == 'linux'",
 ]
 server-wayland = [
-    "python-evdev>=1.9 ; sys_platform == 'linux'",
-    "pywayland>=0.5 ; sys_platform == 'linux'",
+    "evdev>=1.9 ; sys_platform == 'linux'",
+    "pywayland>=0.4.18 ; sys_platform == 'linux'",
     "dbus-next>=0.2 ; sys_platform == 'linux'",
 ]
 # Convenience: everything for a Linux host running both client and server.
@@ -56,8 +56,8 @@ linux-full = [
     "Pillow>=10",
     "python-xlib>=0.33",
     "mss>=9",
-    "python-evdev>=1.9",
-    "pywayland>=0.5",
+    "evdev>=1.9",
+    "pywayland>=0.4.18",
     "dbus-next>=0.2",
 ]
 dev = [

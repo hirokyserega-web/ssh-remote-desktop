@@ -99,6 +99,8 @@ cd ssh-remote-desktop
 # 2. Ставим зависимости
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+# На Linux (сервер/X11/Wayland) дополнительно:
+#   pip install -r requirements-linux.txt
 
 # 3. На сервере запускаем (под root, чтобы иметь права на PAM и запуск Xvfb)
 sudo -E .venv/bin/python -m server --port 2222
@@ -527,7 +529,7 @@ pyinstaller --noconfirm --onefile --name rd-server   server/__main__.py
 
 **`No module named 'av'`** — H.264 недоступен. Клиент автоматически
 переключится на JPEG-delta. Чтобы включить H.264: `pip install av` (нужен
-ffmpeg в системе) или `pip install pyav`.
+ffmpeg в системе).
 
 **`No module named 'Xlib'`** — X11-backend отключает ввод, остаётся
 только захват через `mss`. Поставьте `pip install python-xlib`.

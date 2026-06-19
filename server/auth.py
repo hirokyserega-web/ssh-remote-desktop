@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import logging
 import os
-import pwd
+try:
+    import pwd
+except ImportError:  # Windows: server is Linux-only; guard for test collection.
+    pwd = None
 
 log = logging.getLogger("rd.auth")
 
