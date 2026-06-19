@@ -27,6 +27,28 @@ jobs:
       - name: Compile
         run: python -m compileall -q common crypto server client tests
 
+  scripts-lint:
+    name: Installer scripts (bash -n + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: bash -n (syntax)
+        run: |
+          set -e
+          for f in scripts/*.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
+      - name: shellcheck (warnings, non-fatal on info)
+        run: |
+          # SC1091 (sourcing /etc/os-release) is expected and safe; ignore it.
+          shellcheck -x -e SC1091 scripts/*.sh || {
+            echo "shellcheck reported issues (see above); treating warnings as errors."
+            exit 1
+          }
+
   test-linux:
     name: Tests (Linux, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

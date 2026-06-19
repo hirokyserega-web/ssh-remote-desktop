@@ -16,6 +16,8 @@ wlr-протоколы, `uinput` / `ydotool`). Клиент собирается
 2. [Требования](#требования)
 3. [Быстрый старт](#быстрый-старт)
 4. [Установка](#установка)
+   - [Установка одной командой (curl / PowerShell)](#установка-одной-командой-curl--powershell)
+   - [Установка вручную (extras)](#установка-вручную-extras)
 5. [Запуск сервера](#запуск-сервера)
    - [Под X11 (Xvfb)](#под-x11-xvfb)
    - [Под Wayland (headless-композитор)](#под-wayland-headless-композитор)
@@ -108,6 +110,70 @@ sudo -E .venv/bin/python -m server --port 2222
 ---
 
 ## Установка
+
+### Установка одной командой (curl / PowerShell)
+
+Инсталляторы в `scripts/` сами ставят системные зависимости, создают venv,
+`pip install` проект и симлинкают `rd-server` / `rd-client` в `~/.local/bin`.
+
+**Универсально** (авто-определение ОС/дистрибутива, клиент + сервер):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.sh | bash
+```
+
+Сборка бинарей (system-пакеты + editable-чекаут + Nuitka):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.sh | bash -s -- --both --build
+```
+
+**Только клиент (Linux):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-client-linux.sh | bash
+```
+
+**Только сервер (Linux, нужен sudo):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-server-linux.sh | sudo bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.ps1 | iex
+```
+
+Флаги `install.sh`: `--dev` (git clone) / `--run` (release-тарбол, по умолчанию) /
+`--both`, `--build|--no-build`, `--dir PATH`, `--python BIN`, `--uninstall`.
+Если релиз-тег `v{VERSION}` не существует, инсталлятор автоматически
+откатывается на `archive/refs/heads/main.tar.gz` — установка не падает с 404.
+
+### Установка вручную (extras)
+
+Пакет разбит на опциональные extras, чтобы клиент можно было установить на
+Windows/macOS без Linux-зависимостей, а сервер — на Linux без GUI-библиотек.
+
+#### Только клиент (Windows / macOS / Linux)
+
+```bash
+pip install .[client]
+```
+
+#### Сервер (Linux: X11 + Wayland)
+
+```bash
+pip install .[server]
+```
+
+#### Всё сразу (dev / Linux-десктоп)
+
+```bash
+pip install -e .[client,server,dev]
+```
+
 
 Пакет разбит на опциональные extras, чтобы клиент можно было установить на
 Windows/macOS без Linux-зависимостей, а сервер — на Linux без GUI-библиотек.

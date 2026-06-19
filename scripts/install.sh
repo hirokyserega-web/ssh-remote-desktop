@@ -13,6 +13,7 @@ TARGET_DIR="${SSH_REMOTE_DESKTOP_DIR:-$HOME/.local/share/ssh-remote-desktop}"
 MODE="run"    # run | dev | both
 BUILD="auto"  # auto | yes | no
 PYTHON_BIN=""
+UNINSTALL="no"
 
 usage() {
   cat <<USAGE
@@ -26,6 +27,7 @@ Usage: install.sh [options]
   --build       Force building binaries with Nuitka
   --dir PATH    Install into a different directory
   --python BIN  Use a specific Python interpreter
+  --uninstall   Remove the installation in --dir (venv, sources, symlinks)
   -h, --help    Show this help
 
 Environment:
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --build) BUILD="yes"; shift;;
     --dir) TARGET_DIR="$2"; shift 2;;
     --python) PYTHON_BIN="$2"; shift 2;;
+    --uninstall) UNINSTALL="yes"; shift;;
     -h|--help) usage; exit 0;;
     *) ARGS+=("$1"); shift;;
   esac
@@ -141,7 +144,7 @@ install_system_deps() {
             libxcb-render0 libxcb-render-util0 libxcb-image0 libxcb-keysyms1 \
             libxcb-icccm4 libxcb-sync1 libxcb-xfixes0 libxcb-xkb1 \
             libqt6gui6 libqt6widgets6 libqt6network6 libqt6waylandclient6 \
-            qb6-wayland qt6-wayland qml6-module-qtquick qml6-module-qtqml-workerscript \
+            qt6-wayland qml6-module-qtquick qml6-module-qtqml-workerscript \
             libwayland-client0 libwayland-cursor0 libwayland-egl1 \
             libegl1 libxkbcommon-x11-0 libdbus-1-3 \
             xvfb xauth xclip openssh-client openssh-server ffmpeg \
@@ -207,14 +210,33 @@ fetch_release_tarball() {
   mkdir -p "$TARGET_DIR"
   local tarball
   tarball=$(mktemp -t srd-XXXXXX.tar.gz)
-  local url
-  url=$(curl -fsSL "$REPO_RAW/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
+
+  # Resolve a download URL. Prefer a tagged release matching VERSION, but fall
+  # back to the main branch tarball if the tag does not exist (e.g. no release
+  # has been published yet, or VERSION was bumped but not tagged). We verify
+  # each candidate with a HEAD request so a 404 never aborts the whole install.
+  local version=""
+  version=$(curl -fsSL "$REPO_RAW/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
+
+  local url=""
+  if [[ -n "$version" ]]; then
+    local tag_url="$REPO_URL/archive/refs/tags/v${version}.tar.gz"
+    if curl -fsSI "$tag_url" -o /dev/null 2>/dev/null; then
+      url="$tag_url"
+    else
+      log "Release tag v${version} not found (404); falling back to main branch."
+    fi
+  fi
   if [[ -z "$url" ]]; then
     url="$REPO_URL/archive/refs/heads/main.tar.gz"
-  else
-    url="$REPO_URL/archive/refs/tags/v${url}.tar.gz"
   fi
-  curl -fsSL "$url" -o "$tarball"
+
+  log "Fetching: $url"
+  if ! curl -fsSL "$url" -o "$tarball"; then
+    err "Failed to download sources from $url"
+    rm -f "$tarball"
+    exit 1
+  fi
   tar -xzf "$tarball" -C "$TARGET_DIR" --strip-components=1
   rm -f "$tarball"
 }
@@ -231,11 +253,21 @@ clone_dev() {
 }
 
 # ---- venv + python deps ----------------------------------------------------
+do_uninstall() {
+  if [[ "$UNINSTALL" != "yes" ]]; then return; fi
+  log "Uninstalling ssh-remote-desktop from $TARGET_DIR…"
+  rm -rf "$TARGET_DIR"
+}
+
 setup_venv() {
   local py; py=$(find_python)
   log "Using Python: $($py --version 2>&1) ($py)"
-  log "Creating virtual environment…"
-  "$py" -m venv "$TARGET_DIR/.venv"
+  if [[ -x "$TARGET_DIR/.venv/bin/python" ]]; then
+    log "Reusing existing venv at $TARGET_DIR/.venv"
+  else
+    log "Creating virtual environment…"
+    "$py" -m venv "$TARGET_DIR/.venv"
+  fi
   # shellcheck disable=SC1091
   source "$TARGET_DIR/.venv/bin/activate"
   pip install --upgrade pip wheel setuptools
@@ -272,12 +304,12 @@ maybe_build() {
 # ---- post-install wiring ---------------------------------------------------
 post_install() {
   mkdir -p "$HOME/.config/ssh-remote-desktop"
-  # Symlink into ~/.local/bin if writable.
+  # Symlink into ~/.local/bin if writable. Idempotent: ln -sf always
+  # re-points the link, so re-running the installer refreshes stale links
+  # instead of leaving a dangling symlink from a previous venv.
   if [[ -d "$HOME/.local/bin" ]] || mkdir -p "$HOME/.local/bin"; then
-    [[ -L "$HOME/.local/bin/rd-server" ]] || \
-      ln -sf "$TARGET_DIR/.venv/bin/rd-server" "$HOME/.local/bin/rd-server" 2>/dev/null || true
-    [[ -L "$HOME/.local/bin/rd-client" ]] || \
-      ln -sf "$TARGET_DIR/.venv/bin/rd-client" "$HOME/.local/bin/rd-client" 2>/dev/null || true
+    ln -sf "$TARGET_DIR/.venv/bin/rd-server" "$HOME/.local/bin/rd-server" 2>/dev/null || true
+    ln -sf "$TARGET_DIR/.venv/bin/rd-client" "$HOME/.local/bin/rd-client" 2>/dev/null || true
   fi
 }
 
@@ -288,6 +320,11 @@ main() {
   log "Detected: $OS / $DISTRO"
   log "Target directory: $TARGET_DIR"
   log "Mode: $MODE (build=$BUILD)"
+
+  if [[ "$UNINSTALL" == "yes" ]]; then
+    do_uninstall
+    exit 0
+  fi
 
   install_system_deps || log "Some system packages failed to install; continuing."
 
