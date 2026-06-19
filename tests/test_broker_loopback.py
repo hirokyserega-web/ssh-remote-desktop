@@ -55,7 +55,6 @@ async def test_handshake_and_video_roundtrip(tmp_path):
 
     # Patch the server's session start to be a no-op (we only want the channel
     # handshake here; full session bring-up is exercised in a heavier test).
-    from server import session as session_mod
 
     def fake_acquire(self, user, *, geometry, persistent):
         # Build a session object the connection handler can use without spawning
@@ -146,7 +145,7 @@ async def test_handshake_and_video_roundtrip(tmp_path):
             mux.start()
             hello = messages.hello(
                 codec="jpeg", view=(320, 240), user="root", auth="password",
-                new_session=True, geometry=(320, 240), persistent=False, proto=1,
+                new_session=True, geometry=(320, 240), persistent=False, proto=2,
             )
             payload, flag = messages.dumps(hello)
             mux.send(Channel.CONTROL, payload, flag)

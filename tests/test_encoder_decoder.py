@@ -52,7 +52,7 @@ def test_decoder_reset_clears_state():
 
 
 def test_h264_roundtrip_when_av_available():
-    pyav = pytest.importorskip("av")
+    pytest.importorskip("av")
     enc = create_encoder("h264", 160, 120, fps=10, bitrate_kbps=1000)
     dec = Decoder()
     f = _make_frame(160, 120, fill=10)

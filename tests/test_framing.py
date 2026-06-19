@@ -5,7 +5,6 @@ input/control), bidirectional delivery, and clean shutdown.
 """
 
 import asyncio
-import socket
 
 import pytest
 
@@ -24,8 +23,6 @@ async def _loopback_pair() -> tuple[AsyncByteStream, AsyncByteStream]:
     The "server" side accepts one connection; the "client" side connects to
     it. We return (server_stream, client_stream).
     """
-    loop = asyncio.get_running_loop()
-
     server_conn: asyncio.StreamReader | None = None
     server_writer: asyncio.StreamWriter | None = None
     server_connected = asyncio.Event()
@@ -47,7 +44,10 @@ async def _loopback_pair() -> tuple[AsyncByteStream, AsyncByteStream]:
         )
     finally:
         server.close()
-        await server.wait_closed()
+        # Don't await wait_closed() here — the returned streams keep the
+        # connections open, so wait_closed() would block forever. The server
+        # socket is closed (no new connections); existing connections are
+        # cleaned up when the test closes the multiplexers.
 
 
 @pytest.mark.asyncio
@@ -65,9 +65,11 @@ async def test_mux_roundtrip_video_input_control():
         received_b.append((fr.channel, fr.flags, fr.payload))
 
     mux_a.on(Channel.INPUT, ha)
+    mux_a.on(Channel.CONTROL, ha)   # mux_a receives CONTROL from mux_b
     mux_b.on(Channel.INPUT, hb)
+    mux_b.on(Channel.VIDEO, hb)    # mux_b receives VIDEO from mux_a
     mux_b.on(Channel.CONTROL, hb)
-    mux_a.on(Channel.VIDEO, hb)
+    mux_a.on(Channel.VIDEO, ha)
 
     mux_a.start()
     mux_b.start()

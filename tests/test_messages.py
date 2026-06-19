@@ -32,7 +32,7 @@ def test_loads_rejects_unexpected_encoding(monkeypatch):
 def test_builders_match_spec():
     assert messages.hello(codec="h264", view=(1920, 1080), user="alice",
                           auth="key") == {
-        "t": "hello", "proto": 1, "codec": "h264", "view": [1920, 1080],
+        "t": "hello", "proto": 2, "codec": "h264", "view": [1920, 1080],
         "user": "alice", "auth": "key", "new_session": True,
         "geometry": [1920, 1080], "persistent": False,
     }

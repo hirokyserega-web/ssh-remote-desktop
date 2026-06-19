@@ -192,8 +192,8 @@ class Multiplexer:
             while not self._closed:
                 frame = self._next_frame()
                 if frame is None:
-                    self._wake.clear()
                     await self._wake.wait()
+                    self._wake.clear()
                     continue
                 header = encode_header(frame.channel, frame.flags, len(frame.payload))
                 self._stream.write(header)

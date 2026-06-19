@@ -43,6 +43,19 @@ try:
 except Exception:  # pragma: no cover
     _HAVE_AV = False
 
+# PyAV >= 14 requires an enum/integer for VideoFrame.pict_type; older versions
+# accepted the strings "I"/"NONE". Resolve the right values once at import time.
+_PIC_NONE = 0
+_PIC_I = 1
+if _HAVE_AV:
+    try:
+        from av.video.frame import PictureType  # type: ignore
+
+        _PIC_NONE = int(PictureType.NONE)
+        _PIC_I = int(PictureType.I)
+    except Exception:  # pragma: no cover - very old or very new PyAV
+        pass
+
 try:
     from PIL import Image
 
@@ -146,7 +159,7 @@ class H264Encoder(Encoder):
         bgr = _frame_to_bgr(frame)
         bgr = _composite_cursor(bgr, frame, cursor)
         vframe = av.VideoFrame.from_ndarray(bgr[:, :, ::-1].copy(), format="rgb24")
-        vframe.pict_type = "I" if self._force_key else "NONE"
+        vframe.pict_type = _PIC_I if self._force_key else _PIC_NONE
         self._force_key = False
         out = []
         for packet in self._cc.encode(vframe):
@@ -171,18 +184,29 @@ class JpegEncoder(Encoder):
         else: ndelta * ( u16 x,y,w,h ; u32 len ; jpeg-bytes )
 
     The client reconstructs the framebuffer by blitting each tile.
+
+    Dirty rectangles come from ``frame.damage`` (XDamage / PipeWire). When a
+    backend cannot supply damage (``frame.damage is None``) we fall back to a
+    server-side tile-diff against the previously encoded frame, so the JPEG
+    codec still benefits from deltas on hosts without XDamage.
     """
 
     codec = "jpeg"
     is_image_codec = True
+    #: Side of the diff tiles (pixels). 32 keeps the per-tile MAD cheap.
+    _TILE = 32
+    #: Per-tile mean-absolute-difference above which a tile is considered dirty.
+    _DIFF_THRESHOLD = 3.0
 
     def __init__(self, width, height, fps, bitrate_kbps, quality=80):
         super().__init__(width, height, fps, bitrate_kbps)
         self.quality = quality
         self._sent_full = False
+        self._prev_bgr: "np.ndarray | None" = None
 
     def force_keyframe(self) -> None:
         self._sent_full = False
+        self._prev_bgr = None
 
     def _encode_tile(self, arr) -> bytes:
         img = Image.fromarray(arr[:, :, ::-1])  # BGR -> RGB
@@ -190,27 +214,68 @@ class JpegEncoder(Encoder):
         img.save(buf, format="JPEG", quality=self.quality)
         return buf.getvalue()
 
+    def _tile_diff(self, bgr) -> list[tuple[int, int, int, int]]:
+        """Compare ``bgr`` against the last encoded frame in _TILE x _TILE blocks.
+
+        Returns a list of dirty ``(x, y, w, h)`` rectangles. First call (no
+        previous frame) returns an empty list -- the caller will then send a
+        full frame because ``not self._sent_full``.
+        """
+        prev = self._prev_bgr
+        if prev is None or prev.shape != bgr.shape:
+            return []
+        h, w = bgr.shape[:2]
+        ts = self._TILE
+        dirty: list[tuple[int, int, int, int]] = []
+        # Mean-absolute-difference per channel, summed; threshold in uint8 units.
+        for y in range(0, h, ts):
+            for x in range(0, w, ts):
+                a = bgr[y:y + ts, x:x + ts, :]
+                b = prev[y:y + ts, x:x + ts, :]
+                mad = float(np.mean(np.abs(a.astype(np.int16) - b.astype(np.int16))))
+                if mad >= self._DIFF_THRESHOLD:
+                    dirty.append((x, y, a.shape[1], a.shape[0]))
+        return dirty
+
     def encode(self, frame: Frame, cursor: CursorImage | None = None):
         if not (_HAVE_NUMPY and _HAVE_PIL):
             return []
         bgr = _frame_to_bgr(frame)
         bgr = _composite_cursor(bgr, frame, cursor)
 
-        full = (not self._sent_full) or not frame.damage
-        if full:
+        # First frame is always a full keyframe so the client has a baseline.
+        if not self._sent_full:
             jpeg = self._encode_tile(bgr)
             payload = b"JD" + struct.pack("!BB", 0, 1)
             payload += struct.pack("!HHI", frame.width, frame.height, len(jpeg)) + jpeg
             self._sent_full = True
+            self._prev_bgr = bgr.copy()
             return [(payload, True)]
 
-        rects = _merge_rects(frame.damage, frame.width, frame.height)
+        # Source of dirty rectangles: backend-supplied damage (XDamage /
+        # PipeWire) preferred; otherwise fall back to a server-side tile diff
+        # against the last encoded frame. An empty result means nothing
+        # changed -- we emit an empty delta packet (ndelta=0) rather than
+        # re-sending the whole frame.
+        if frame.damage is not None:
+            rects = frame.damage
+        else:
+            rects = self._tile_diff(bgr)
+
+        if not rects:
+            # Nothing changed: a 0-delta packet keeps the wire quiet and the
+            # client's framebuffer untouched.
+            self._prev_bgr = bgr.copy()
+            return [(b"JD" + struct.pack("!BB", 0, 0), False)]
+
+        rects = _merge_rects(rects, frame.width, frame.height)
         parts = [b"JD", struct.pack("!BB", len(rects), 0)]
         for (x, y, w, h) in rects:
             tile = bgr[y:y + h, x:x + w, :]
             jpeg = self._encode_tile(tile)
             parts.append(struct.pack("!HHHHI", x, y, w, h, len(jpeg)))
             parts.append(jpeg)
+        self._prev_bgr = bgr.copy()
         return [(b"".join(parts), False)]
 
 

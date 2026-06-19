@@ -8,6 +8,8 @@ the Qt GUI can call. The transport:
 * performs the ``hello``/``session`` handshake,
 * exposes callbacks for video packets, clipboard updates, file results and
   session info,
+* measures RTT and reports loss/latency stats so the server can adapt
+  bitrate/FPS (see :meth:`heartbeat` / :meth:`_h_control`),
 * reconnects automatically on drop.
 
 File *bytes* use the same connection's SFTP subsystem (see
@@ -17,8 +19,10 @@ File *bytes* use the same connection's SFTP subsystem (see
 from __future__ import annotations
 
 import asyncio
+import collections as _c
 import logging
 import threading
+import time
 from typing import Callable
 
 import asyncssh
@@ -27,7 +31,21 @@ from common import messages
 from common.framing import AsyncByteStream, Frame, Multiplexer
 from common.protocol import Channel, PROTO_VERSION
 
+from .hostkeys import (
+    KnownHostsStore,
+    TofuClient,
+)
+
 log = logging.getLogger("rd.client.transport")
+
+
+async def _noninteractive_ask(host: str, port: int, fingerprint: str, first_time: bool) -> bool:
+    """Headless default TOFU policy used when no GUI callback is wired.
+
+    Refuses unknown/changed keys so programmatic use never silently trusts a
+    new host. Operators who want auto-trust can pre-seed the known-hosts file.
+    """
+    return False
 
 
 class Transport:
@@ -48,6 +66,27 @@ class Transport:
         self.on_files: Callable[[dict], None] = lambda msg: None
         self.on_session: Callable[[dict], None] = lambda msg: None
         self.on_state: Callable[[str, str], None] = lambda state, detail: None
+        # Host-key TOFU notification (fire-and-forget). The GUI shows a dialog
+        # and resolves the pending question via :meth:`confirm_host_key`.
+        self.on_host_key: "Callable[[str, int, str, bool], None] | None" = None
+        # Known-hosts store; the GUI may override the path via cfg.known_hosts.
+        self._hostkeys = KnownHostsStore(self.cfg.known_hosts)
+        # TOFU ask bridge: when validate_host_public_key awaits, we emit the
+        # on_host_key callback and block on this Event until confirm_host_key()
+        # resolves it.
+        self._tofu_event: asyncio.Event | None = None
+        self._tofu_result: bool = False
+
+        # RTT / stats measurement (P1 4.1): each heartbeat sends a ping with a
+        # millisecond timestamp; the echoed pong yields a round-trip sample.
+        # We keep a small rolling window and a pending-ping counter so we can
+        # estimate loss (pings sent vs pongs received) and report both to the
+        # server, whose _adapt() lowers/raises bitrate+fps from them.
+        self._rtt_samples: "_c.deque[int]" = _c.deque(maxlen=16)
+        self._pings_sent: int = 0
+        self._pongs_recv: int = 0
+        self._heartbeat_tick: int = 0
+        self.view_
 
         self.session_info: dict | None = None
 
@@ -75,6 +114,42 @@ class Transport:
 
     def send_files(self, obj: dict):
         self._send(Channel.FILES, obj)
+
+    def heartbeat(self) -> None:
+        """Send a ping carrying a millisecond timestamp (thread-safe).
+
+        Called by the GUI's heartbeat timer. The server echoes it back as a
+        pong (see :meth:`_h_control`), which we turn into an RTT sample. Every
+        few heartbeats we also push a ``stats`` message so the server's
+        ``_adapt`` can adjust bitrate/FPS from real network conditions.
+        """
+        ts = int(time.monotonic() * 1000)
+        self._pings_sent += 1
+        self._heartbeat_tick += 1
+        self._send(Channel.CONTROL, messages.ping(ts))
+        # Report stats every 5th heartbeat (~15s at the 3s timer). Sending too
+        # often would itself add latency; the server adapts in steps anyway.
+        if self._heartbeat_tick % 5 == 0:
+            self._send_stats()
+
+    def _send_stats(self) -> None:
+        rtt = (
+            sum(self._rtt_samples) / len(self._rtt_samples)
+            if self._rtt_samples else 0.0
+        )
+        # Loss as a fraction in [0, 1]: unanswered pings over pings sent. We
+        # floor the denominator so a cold start (1-2 pings) does not report a
+        # huge loss spike; once we have samples the ratio is meaningful.
+        sent = max(self._pings_sent, 5)
+        loss = max(0.0, (sent - self._pongs_recv) / sent)
+        queued = 0
+        if self.mux is not None:
+            # Approximate outbound backlog across all channels.
+            try:
+                queued = sum(len(q) for q in self.mux._queues.values())
+            except Exception:
+                queued = 0
+        self._send(Channel.CONTROL, messages.stats(loss=loss, rtt_ms=rtt, queued=queued))
 
     def get_connection(self):
         """Return the live asyncssh connection (for SFTP); may be None."""
@@ -148,8 +223,17 @@ class Transport:
         import os
         opts: dict = {
             "username": self.cfg.user,
-            "known_hosts": None if self.cfg.accept_unknown_host else self._known_hosts(),
+            # We do our own TOFU validation via TofuClient below, so tell
+            # asyncssh not to enforce its own known_hosts check (which would
+            # reject every first-time host before our callback runs). Passing
+            # known_hosts=None disables asyncssh's built-in validation entirely.
+            "known_hosts": None,
         }
+        # TOFU client: ask() is awaited on the asyncio loop and blocks until
+        # the GUI resolves it via confirm_host_key(). The non-interactive
+        # fallback is used only when no GUI callback was wired (headless use).
+        ask = self._ask_host_key if self.on_host_key is not None else _noninteractive_ask
+        opts["client"] = TofuClient(self._hostkeys, ask)
         if self.cfg.auth == "password" and self._password is not None:
             opts["password"] = self._password
             opts["client_keys"] = None
@@ -162,15 +246,38 @@ class Transport:
                 opts["passphrase"] = self._password
         return opts
 
-    def _known_hosts(self):
-        import os
-        path = os.path.expanduser(self.cfg.known_hosts)
-        return path if os.path.exists(path) else None
+    async def _ask_host_key(self, host: str, port: int, fingerprint: str, first_time: bool) -> bool:
+        """Notify the GUI and block on the asyncio loop until it answers.
+
+        The GUI's on_host_key callback is fire-and-forget (it emits a Qt signal
+        and returns immediately); the actual dialog runs on the Qt thread and
+        calls back via :meth:`confirm_host_key`, which resolves ``_tofu_event``.
+        """
+        self._tofu_event = asyncio.Event()
+        self.on_host_key(host, port, fingerprint, first_time)
+        await self._tofu_event.wait()
+        return self._tofu_result
+
+    def confirm_host_key(self, accepted: bool) -> None:
+        """Resolve a pending TOFU question (called from the GUI thread)."""
+        if self._tofu_event is not None and self._loop is not None:
+            self._tofu_result = accepted
+            self._loop.call_soon_threadsafe(self._tofu_event.set)
 
     async def _handshake(self):
+        # Ask the GUI for the current view size (falls back to session geometry
+        # when no provider is set, e.g. headless). With PROTO 2 the server
+        # scales mouse coords from normalized floats, so this is advisory -- the
+        # authoritative size arrives in the resize message on connect -- but we
+        # send the real widget size instead of the session geometry so the
+        # server's initial _client_view is not misleading.
+        try:
+            view = tuple(self._view_size_provider())
+        except Exception:
+            view = tuple(self.cfg.geometry)
         hello = messages.hello(
             codec=self.cfg.codec,
-            view=tuple(self.cfg.geometry),
+            view=view,
             user=self.cfg.user,
             auth=self.cfg.auth,
             new_session=self.cfg.new_session,
@@ -192,7 +299,12 @@ class Transport:
             self.session_info = msg
             self.on_session(msg)
         elif t == "pong":
-            pass
+            # RTT sample: the server echoed our ping timestamp back verbatim.
+            ts = msg.get("ts")
+            if ts is not None:
+                rtt = max(0, int(time.monotonic() * 1000) - int(ts))
+                self._rtt_samples.append(rtt)
+                self._pongs_recv += 1
         elif t == "error":
             self.on_state("error", msg.get("msg", "server error"))
 
