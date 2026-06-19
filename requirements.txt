@@ -12,10 +12,8 @@ mss>=10.0
 av>=14.0
 PySide6>=6.8
 
-# Linux-only runtime dependencies (keyboard/evdev + Wayland + D-Bus).
-# These packages ship no Windows/macOS wheels, so installers split them out
-# and CI gates them behind `sysplatform == 'linux'`.
-# See requirements-linux.txt for the pinned set used on Linux.
-evdev>=1.7
-pywayland>=0.4.13
-dbus-next>=0.2
+# Linux-only runtime dependencies (keyboard/evdev + Wayland + D-Bus)
+# live in requirements-linux.txt — they ship no Windows/macOS wheels, so
+# keeping them here would break `pip install -r requirements.txt` on
+# non-Linux OSes. On Linux, install both:
+#   pip install -r requirements.txt -r requirements-linux.txt
