@@ -12,6 +12,8 @@ import sys
 import threading
 import time
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from server import daemon
@@ -44,6 +46,7 @@ def test_is_pid_alive_current_process():
     assert daemon.is_pid_alive(os.getpid()) is True
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="PID 1 (init) is Unix-only")
 def test_is_pid_alive_init():
     # PID 1 (supervisor/init) is always alive in a container.
     assert daemon.is_pid_alive(1) is True

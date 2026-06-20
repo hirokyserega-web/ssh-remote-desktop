@@ -37,10 +37,15 @@ def default_pidfile() -> str:
 def is_pid_alive(pid: int) -> bool:
     """Return True if a process with ``pid`` exists.
 
-    Uses ``os.kill(pid, 0)`` and treats EPERM as "alive but not ours".
+    On Unix, uses ``os.kill(pid, 0)`` and treats EPERM as "alive but not
+    ours".  On Windows, ``os.kill(pid, 0)`` calls ``TerminateProcess`` and
+    would **kill** the process, so we use the Win32 API instead
+    (``OpenProcess`` + ``GetExitCodeProcess``).
     """
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        return _is_pid_alive_win32(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -48,6 +53,32 @@ def is_pid_alive(pid: int) -> bool:
     except PermissionError:
         return True  # exists, just not killable by us
     return True
+
+
+def _is_pid_alive_win32(pid: int) -> bool:
+    """Windows liveness check via OpenProcess + GetExitCodeProcess."""
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    ERROR_ACCESS_DENIED = 5
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        # NULL handle → process doesn't exist OR we lack access.
+        if kernel32.GetLastError() == ERROR_ACCESS_DENIED:
+            return True  # exists but not queryable
+        return False
+    try:
+        exit_code = wintypes.DWORD()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return exit_code.value == STILL_ACTIVE
+        return False
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def read_pidfile(path: str) -> Optional[dict]:
@@ -126,6 +157,12 @@ def daemonize(log_file: Optional[str] = None) -> None:
         # rest of main() inside a single pytest process.
         _reset_stdio(log_file)
         return
+
+    if not hasattr(os, "fork"):
+        raise NotImplementedError(
+            "daemon mode (double-fork) is not supported on Windows; "
+            "run rd-server in the foreground instead."
+        )
 
     # First fork.
     pid = os.fork()
