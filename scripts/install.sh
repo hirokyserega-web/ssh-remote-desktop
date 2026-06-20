@@ -468,7 +468,7 @@ install_system_deps() {
         xcb-util-cursor xcb-util-keysyms xcb-util-wm \
         xcb-util-image xcb-util-renderutil \
         libxkbcommon-x11 wayland \
-        xorg-server-xvfb xauth xclip \
+        xorg-server-xvfb xorg-xauth xclip \
         openssh ffmpeg xdg-utils \
         || true
       ;;
@@ -831,26 +831,60 @@ do_diagnose() {
 }
 
 # ---- post-install wiring ---------------------------------------------------
+# When run under sudo, $HOME is root's home — but the *invoking* user is the
+# one who'll type `rd-server` in their terminal. Resolve that user's home via
+# SUDO_USER + getent so we can drop the PATH symlinks where they actually
+# matter (and overwrite stale ones from a previous non-sudo install that would
+# otherwise shadow the new /usr/local/bin binary). Prints the home path on
+# stdout, empty when not running under sudo or it can't be resolved.
+real_user_home() {
+  local user="${SUDO_USER:-}"
+  [[ -z "$user" ]] && return 0
+  [[ "$user" == "root" ]] && return 0
+  local home
+  home=$(getent passwd "$user" 2>/dev/null | awk -F: '{print $6}')
+  [[ -n "$home" ]] && echo "$home"
+}
+
+# Drop the rd-* PATH symlinks into $1 (a home dir), preferring prebuilt
+# binaries in $TARGET_DIR/bin and falling back to the venv console scripts.
+# `ln -sf` overwrites any existing symlink (including a stale one pointing at
+# an old install dir), so the user always ends up with the freshly-installed
+# binary regardless of which ~/.local/bin entry was on PATH first.
+install_user_symlinks() {
+  local home="$1"
+  local bindir="$home/.local/bin"
+  mkdir -p "$bindir"
+  local name target
+  for name in rd-server rd-client rd-server-gui rd-launch; do
+    target=""
+    if [[ -x "$TARGET_DIR/bin/$name" ]]; then
+      target="$TARGET_DIR/bin/$name"
+    elif [[ -x "$TARGET_DIR/.venv/bin/$name" ]]; then
+      target="$TARGET_DIR/.venv/bin/$name"
+    fi
+    if [[ -n "$target" ]]; then
+      ln -sf "$target" "$bindir/$name" 2>/dev/null || true
+    fi
+  done
+}
+
 post_install() {
   mkdir -p "$HOME/.config/ssh-remote-desktop"
-  if [[ -d "$HOME/.local/bin" ]] || mkdir -p "$HOME/.local/bin"; then
-    # Prefer prebuilt binaries in $TARGET_DIR/bin; fall back to the venv's
-    # console scripts when installed from source. Include rd-server-gui so the
-    # server management panel is on PATH alongside the CLI tools. rd-launch is
-    # the session-env wrapper used by the .desktop entries (installed by
-    # install_desktop_entries via write_rd_launch); symlink it here too so
-    # `rd-launch <bin>` works from a terminal.
-    for name in rd-server rd-client rd-server-gui rd-launch; do
-      local target=""
-      if [[ -x "$TARGET_DIR/bin/$name" ]]; then
-        target="$TARGET_DIR/bin/$name"
-      elif [[ -x "$TARGET_DIR/.venv/bin/$name" ]]; then
-        target="$TARGET_DIR/.venv/bin/$name"
-      fi
-      if [[ -n "$target" ]]; then
-        ln -sf "$target" "$HOME/.local/bin/$name" 2>/dev/null || true
-      fi
-    done
+  # Drop PATH symlinks into the current $HOME's ~/.local/bin. Under sudo this
+  # is /root (harmless), but we also re-point the *invoking* user's symlinks
+  # below so their terminal actually runs the new binary instead of a stale
+  # ~/.local/bin/rd-* left over from a previous non-sudo install.
+  install_user_symlinks "$HOME"
+  # When run under sudo, $HOME is root's; the real user is $SUDO_USER. Repoint
+  # THEIR ~/.local/bin/rd-* symlinks at the freshly-installed binary so `rd-server`
+  # typed in their shell resolves to this install (overwriting any stale link
+  # that would otherwise shadow /usr/local/bin and run an old, crashing binary).
+  local rhome
+  rhome=$(real_user_home)
+  if [[ -n "$rhome" && "$rhome" != "$HOME" ]]; then
+    install_user_symlinks "$rhome"
+    log "Linked rd-* into $rhome/.local/bin (invoking user via sudo)."
   fi
   # Application-menu launchers + icons, and ensure ~/.local/bin is on PATH for
   # fresh shells so the user never needs to type a setup command.

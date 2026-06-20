@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Arch Linux: the server install tried to `pacman -S xauth`, but the package
+  is named `xorg-xauth` on Arch — the install aborted with "target not found:
+  xauth". Fixed to `xorg-xauth`.
+- `sudo install-server-linux.sh` linked the new binary into `/root/.local/bin`
+  (useless for the real user) and left a stale `~/.local/bin/rd-server` symlink
+  from a previous non-sudo install in place. That stale link shadowed
+  `/usr/local/bin`, so `rd-server` kept launching the old, crashing binary even
+  though the fresh one was installed. The installer now resolves the invoking
+  user's home via `SUDO_USER` and re-points their `~/.local/bin/rd-*` symlinks
+  at the freshly-installed binary.
+
 ## [1.4.4] - 2026-06-20
 
 ### Fixed
