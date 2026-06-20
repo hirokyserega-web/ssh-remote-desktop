@@ -20,8 +20,10 @@ from server import daemon
 # --------------------------------------------------------------------------- #
 # default_pidfile
 # --------------------------------------------------------------------------- #
-def test_default_pidfile_root_uses_run():
-    assert os.geteuid() == 0  # test runs as root in this environment
+def test_default_pidfile_root_uses_run(monkeypatch):
+    # Force the root code path regardless of the real euid, so the test is
+    # deterministic on CI runners (euid != 0) as well as under root.
+    monkeypatch.setattr(daemon.os, "geteuid", lambda: 0)
     assert daemon.default_pidfile() == "/run/ssh-remote-desktop.pid"
 
 
