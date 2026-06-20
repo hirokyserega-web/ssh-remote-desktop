@@ -54,7 +54,13 @@ warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 err() { printf '\033[1;31mERR:\033[0m %s\n' "$*" >&2; }
 
 # ---- argument parsing ------------------------------------------------------
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve script dir; fall back to CWD when piped via curl|bash
+# (BASH_SOURCE[0] is empty there, which under `set -u` is fatal).
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+  HERE="$(pwd)"
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dev) MODE="dev"; shift;;
