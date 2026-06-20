@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#0f1115"/>
+  <rect x="40" y="40" width="1200" height="80" rx="8" fill="#1a1d24"/>
+  <text x="60" y="90" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="700" fill="#e6e6e6">SSH Remote Desktop — клиент</text>
+  <rect x="40" y="140" width="900" height="540" rx="8" fill="#15181f" stroke="#2a2f3a" stroke-width="2"/>
+  <text x="490" y="420" font-family="Segoe UI, Arial, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">Скриншот рабочего стола</text>
+  <rect x="960" y="140" width="280" height="540" rx="8" fill="#1a1d24"/>
+  <text x="1100" y="200" font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#9ca3af" text-anchor="middle">Файлы</text>
+  <text x="1100" y="240" font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#9ca3af" text-anchor="middle">Ключи</text>
+  <text x="1100" y="280" font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#9ca3af" text-anchor="middle">Настройки</text>
+  <text x="640" y="690" font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#4b5563" text-anchor="middle">TODO: заменить на реальный скриншот клиента (docs/img/client.png)</text>
+</svg>

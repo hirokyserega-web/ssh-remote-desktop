@@ -1,641 +1,721 @@
+<div align="center">
+
 # SSH Remote Desktop
 
-Кросс-платформенный клиент-сервер для удалённого графического доступа к
-**Linux**-машинам. Транспорт — **только SSH** (никаких VNC/RDP), поверх
-одного соединения мультиплексируются видео, ввод, буфер обмена и передача
-файлов. Сервер умеет работать как под **X11** (Xvfb, XTEST, XDamage,
-XFixes), так и под **Wayland** (PipeWire + xdg-desktop-portal,
-wlr-протоколы, `uinput` / `ydotool`). Клиент собирается под **Windows** и
-**Linux** (Qt / PySide6, корректно работает и под X11, и под Wayland).
+**Удалённый рабочий стол поверх SSH — для тех, кому нужен графический доступ к Linux-машине без VNC, RDP и открытых лишних портов.**
+
+[![CI](https://github.com/hirokyserega-web/ssh-remote-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/hirokyserega-web/ssh-remote-desktop/actions/workflows/ci.yml)
+[![Release](https://github.com/hirokyserega-web/ssh-remote-desktop/actions/workflows/release.yml/badge.svg)](https://github.com/hirokyserega-web/ssh-remote-desktop/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/hirokyserega-web/ssh-remote-desktop?label=latest%20release)](https://github.com/hirokyserega-web/ssh-remote-desktop/releases)
+[![License: MIT](https://img.shields.io/github/license/hirokyserega-web/ssh-remote-desktop?label=license)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![Platform: Linux · Windows · macOS](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-lightgrey)](#поддержка-платформ)
+
+**RU** · [**EN**](README.en.md)
+
+</div>
 
 ---
+
+<img src="docs/img/client.png" alt="Клиент rd-client" width="880"/>
+<img src="docs/img/server-gui.png" alt="Панель rd-server-gui" width="380"/>
+
+> Скриншоты выше — плейсхолдеры в `docs/img/`. Замените `client.png` и `server-gui.png` на реальные снимки `rd-client` и `rd-server-gui` (см. `docs/img/README.md`).
+
+---
+
+## Ключевые возможности
+
+- 🔐 **Только SSH-транспорт.** Никаких VNC/RDP/открытых графических портов — всё мультиплексируется по одному SSH-соединению (каналы `control` / `video` / `input` / `clipboard` / `files`).
+- 🖥️ **Сервер на X11 и Wayland.** X11 — через Xvfb + XTEST + XDamage + XFixes. Wayland — через PipeWire + `xdg-desktop-portal` + wlr-протоколы + `uinput` (захват экрана под Wayland — экспериментальный, см. [платформы](#поддержка-платформ)).
+- 🎞️ **Кодеки `h264` / `h265` / `jpeg`.** H.264/H.265 — через PyAV (ffmpeg), JPEG — через Pillow с дельта-кодированием по «грязным» прямоугольникам. Авто-fallback на JPEG, если PyAV недоступен.
+- 📁 **SFTP с jail.** Передача байтов — через штатный SFTP-subsystem asyncssh, но навигация ограничена общей папкой сессии (`FileJail` блокирует `..` и абсолютные пути).
+- 📋 **Буфер обмена.** Двунаправленная синхронизация через `xclip`/`wl-clipboard` на сервере и `QClipboard` на клиенте. Лимит размера и отключение на сторону — в конфиге.
+- 👥 **Мультисессии.** Несколько одновременных сессий на одном сервере, persistent-сессии для переподключения, idle-timeout, ограничение `max_sessions`.
+- 🛠️ **Демон и systemd.** `rd-server --daemon/--stop/--status` (double-fork + setsid + pidfile) либо `--install-service` / `--uninstall-service` для systemd-юнита `ssh-remote-desktop.service`.
+- 🎛️ **Графическая панель `rd-server-gui`.** Редактор `server.toml`, старт/стоп/рестарт сервера (через systemd или daemon-fallback), live-лог, трей, автозапуск при загрузке. Без хранения секретов.
 
 ## Содержание
 
-1. [Архитектура](#архитектура)
-2. [Требования](#требования)
-3. [Быстрый старт](#быстрый-старт)
-4. [Установка](#установка)
-   - [Установка одной командой (curl / PowerShell)](#установка-одной-командой-curl--powershell)
-   - [Установка вручную (extras)](#установка-вручную-extras)
-5. [Запуск сервера](#запуск-сервера)
-   - [Демон и systemd](#демон-и-systemd)
-   - [Графическая панель (rd-server-gui)](#графическая-панель-rd-server-gui)
-   - [Под X11 (Xvfb)](#под-x11-xvfb)
-   - [Под Wayland (headless-композитор)](#под-wayland-headless-композитор)
-6. [Запуск клиента](#запуск-клиента)
-   - [На Linux X11 / Wayland](#на-linux-x11--wayland)
-   - [На Windows](#на-windows)
-7. [SSH-ключи](#ssh-ключи)
-8. [Буфер обмена](#буфер-обмена)
-9. [Общие папки и передача файлов](#общие-папки-и-передача-файлов)
-10. [Многопользовательский режим и сессии](#многопользовательский-режим-и-сессии)
-11. [Конфигурация](#конфигурация)
-12. [Сборка исполняемых файлов](#сборка-исполняемых-файлов)
-13. [Troubleshooting](#troubleshooting)
-14. [Безопасность](#безопасность)
-15. [Лицензия](#лицензия)
-
----
-
-## Архитектура
-
-```
-[Клиент: Windows / Linux X11+Wayland]  ──SSH──►  [Сервер: Linux X11 / Wayland]
-  │ GUI (PySide6, xcb/wayland)                     │ Backend X11|Wayland
-  │ Генерация SSH-ключей                           │ Захват экрана
-  │ Декодер кадров (pyav / JPEG-delta)             │ Эмуляция ввода
-  │ Отправка ввода                                 │ Кодер кадров
-  │ Буфер обмена (QClipboard)                      │ Буфер: xclip / wl-clipboard
-  │ Файловый менеджер (SFTP)                       │ SFTP-сервер (jail)
-  └── SSH-мультиплекс: control / video / input / clipboard / files (SFTP) ──┘
-```
-
-См. подробности протокола в `file 'common/protocol.py'` (формат фрейма) и
-`file 'common/messages.py'` (словарь управляющих сообщений).
-
----
-
-## Требования
-
-### Сервер (Linux)
-
-- Python 3.11+
-- Системные пакеты — зависят от выбранного backend'а.
-
-**X11:**
-
-```bash
-sudo apt install -y libx11-6 libxext6 libxtst6 libxfixes3 libxdamage1 \
-  xauth xclip xvfb x11-utils
-# (опционально) для H.264:
-sudo apt install -y ffmpeg
-```
-
-**Wayland:**
-
-```bash
-sudo apt install -y pipewire xdg-desktop-portal \
-  xdg-desktop-portal-gnome | xdg-desktop-portal-kde | xdg-desktop-portal-wlr \
-  wl-clipboard ydotool sway   # sway --headless, как headless-композитор
-# для /dev/uinput (виртуальный ввод):
-sudo usermod -aG input $USER
-```
-
-### Клиент
-
-- **Linux:** Qt-плагины для X11 и Wayland (обычно идут в комплекте с
-  PySide6).
-- **Windows:** ничего дополнительного — Qt-плагин `windows` встроен в
-  PySide6.
-
----
+- [Быстрый старт](#быстрый-старт)
+- [Поддержка платформ](#поддержка-платформ)
+- [Архитектура](#архитектура)
+- [Установка (подробно)](#установка-подробно)
+- [Запуск сервера](#запуск-сервера)
+- [Запуск клиента](#запуск-клиента)
+- [SSH-ключи](#ssh-ключи)
+- [Буфер обмена](#буфер-обмена)
+- [Файлы и SFTP](#файлы-и-sftp)
+- [Мультисессии](#мультисессии)
+- [Конфигурация](#конфигурация)
+- [Сборка исполняемых файлов](#сборка-исполняемых-файлов)
+- [Troubleshooting](#troubleshooting)
+- [Безопасность](#безопасность)
+- [Разработка и contributing](#разработка-и-contributing)
+- [Лицензия](#лицензия)
 
 ## Быстрый старт
 
-```bash
-# 1. Клонируем
-git clone https://github.com/hirokyserega-web/ssh-remote-desktop.git
-cd ssh-remote-desktop
+Установите клиент и сервер одной командой. По умолчанию ставится готовый бинарь из последнего [GitHub Release](https://github.com/hirokyserega-web/ssh-remote-desktop/releases) (с проверкой SHA256); если ассета для вашей платформы нет — сборка из исходников.
 
-# 2. Ставим зависимости
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-# На Linux (сервер/X11/Wayland) дополнительно:
-#   pip install -r requirements-linux.txt
-
-# 3. На сервере запускаем (под root, чтобы иметь права на PAM и запуск Xvfb)
-sudo -E .venv/bin/python -m server --port 2222
-
-# 4. На клиенте подключаемся
-.venv/bin/python -m client --host 192.168.1.10 --port 2222 --user alice --auth key
-```
-
----
-
-## Установка
-
-### Установка одной командой (curl / PowerShell)
-
-Инсталляторы в `scripts/` сами ставят системные зависимости, создают venv,
-`pip install` проект и симлинкают `rd-server` / `rd-client` в `~/.local/bin`.
-
-**Универсально** (авто-определение ОС/дистрибутива, клиент + сервер):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.sh | bash
-```
-
-Сборка бинарей (system-пакеты + editable-чекаут + Nuitka):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.sh | bash -s -- --both --build
-```
-
-**Только клиент (Linux):**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-client-linux.sh | bash
-```
-
-**Только сервер (Linux, нужен sudo):**
+**Linux — сервер** (нужен `sudo` для PAM, Xvfb и `/dev/uinput`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-server-linux.sh | sudo bash
 ```
 
-**Windows (PowerShell):**
+**Linux — клиент:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-client-linux.sh | bash
+```
+
+**Windows — клиент** (PowerShell 5.1+):
 
 ```powershell
-irm https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-client-windows.ps1 | iex
 ```
 
-Флаги `install.sh`: `--dev` (git clone) / `--run` (release-тарбол, по умолчанию) /
-`--both`, `--build|--no-build`, `--dir PATH`, `--python BIN`, `--uninstall`.
-Если релиз-тег `v{VERSION}` не существует, инсталлятор автоматически
-откатывается на `archive/refs/heads/main.tar.gz` — установка не падает с 404.
-
-### Установка вручную (extras)
-
-Пакет разбит на опциональные extras, чтобы клиент можно было установить на
-Windows/macOS без Linux-зависимостей, а сервер — на Linux без GUI-библиотек.
-
-#### Только клиент (Windows / macOS / Linux)
+**Первый запуск (3 шага):**
 
 ```bash
-pip install .[client]
+# 1. На сервере: сгенерируйте SSH-ключ клиента (или используйте существующий ~/.ssh/id_ed25519)
+rd-client --keygen                # на клиентской машине
+
+# 2. Добавьте публичный ключ клиента в authorized_keys пользователя на сервере
+#    (вставьте ~/.config/ssh-remote-desktop/id_ed25519.pub в
+#     server_user@server:~/.ssh/authorized_keys)
+
+# 3. Подключитесь
+rd-client --host YOUR-SERVER --user YOUR-USER --key-path ~/.ssh/id_ed25519
 ```
 
-#### Сервер (Linux: X11 + Wayland)
+> Бинари ставятся в `~/.local/share/ssh-remote-desktop/bin` и ссылаются из `~/.local/bin`. Если `~/.local/bin` нет в `PATH`, откройте новый шелл или выполните `export PATH="$HOME/.local/bin:$PATH"`.
+
+## Поддержка платформ
+
+| Компонент | Linux X11 | Linux Wayland | Windows | macOS |
+|---|:---:|:---:|:---:|:---:|
+| **Сервер** (захват экрана + ввод) | ✅ Полностью (Xvfb + XTEST + XDamage) | ⚠️ Экспериментально (PipeWire + портал; placeholder-кадр, если портал недоступен) | ❌ | ❌ |
+| **Клиент** (GUI + декодер) | ✅ (`xcb`) | ✅ (`wayland;xcb` с fallback на XWayland) | ✅ | ⚠️ Сборка из исходников, без готового release-ассета |
+
+Бэкенд сервера выбирается ключом `backend = "auto" | "x11" | "wayland"` (по умолчанию `auto`: X11 при наличии `DISPLAY`, иначе Wayland).
+
+## Архитектура
+
+```mermaid
+flowchart LR
+  subgraph Client["Клиент (rd-client, PySide6)"]
+    GUI["GUI + DesktopView"]
+    Dec["Декодер кадров<br/>PyAV / JPEG-delta"]
+    In["Отправка ввода"]
+    Clip["Буфер обмена<br/>QClipboard"]
+    Files["Файловый менеджер"]
+    KH["known_hosts (TOFU)"]
+  end
+
+  subgraph Server["Сервер (rd-server, Linux)"]
+    Bro["Broker / SSH server<br/>(asyncssh)"]
+    X11["Backend X11<br/>Xvfb · XTEST · XDamage"]
+    WL["Backend Wayland<br/>PipeWire · uinput"]
+    Enc["Кодер кадров<br/>H264/H265/JPEG"]
+    Auth["PAM / authorized_keys"]
+    Jail["SFTP jail<br/>FileJail"]
+  end
+
+  GUI --> Dec
+  GUI --> In
+  GUI --> Clip
+  GUI --> Files
+  GUI <--> KH
+
+  In -- "input channel" --> Bro
+  Bro -- "video channel" --> Dec
+  Clip <--> Bro
+  Files -- "files (nav)" --> Bro
+  GUI -- "control channel" --> Bro
+
+  Bro --> X11
+  Bro --> WL
+  X11 --> Enc
+  WL --> Enc
+  Enc -- "video channel" --> Bro
+  Bro --> Auth
+  Bro --> Jail
+  Files -. "bytes via SFTP subsystem" .-> Jail
+```
+
+**Один SSH-канал, пять логических каналов.** Транспорт asyncssh даёт один байтовый поток; поверх него `common/framing.py` запускает мини-мультиплексор: каждый кадр помечен `Channel` (`control` / `video` / `input` / `clipboard` / `files`) в фиксированном 6-байтовом заголовке (`common/protocol.py`). Сообщения контрольного плана сериализуются MessagePack, если доступен, иначе JSON (`common/messages.py`).
+
+**Файлы — гибрид.** Байты файлов идут через штатный SFTP-subsystem asyncssh (отдельный канал SSH), а канал `files` в нашем мультиплексоре несёт только команды навигации/статуса. `FileJail` (`server/files.py`) ограничивает все пути рамками общей папки сессии.
+
+<details>
+<summary><strong>Структура репозитория</strong></summary>
+
+```
+client/            GUI-клиент (PySide6): main_window, desktop_view, transport, decoder, dialogs
+common/            Общий код обеих сторон
+  protocol.py      PROTO_VERSION, Channel, Flags, формат фрейма
+  framing.py       Кодек фреймов + асинхронный мультиплексор
+  messages.py      Сериализация control/input/clipboard сообщений (JSON/MessagePack)
+  config.py        ServerConfig / ClientConfig, загрузка TOML/JSON
+server/            SSH-сервер
+  broker.py        Broker: приём соединений, SFTP-factory, диспетчеризация
+  connection.py    Обработка одной SSH-сессии
+  daemon.py        Двойной fork, pidfile, --stop/--status
+  encoder.py       H264/H265/JPEG кодеры
+  backend/         base.py · x11.py · wayland.py · wayland_pipewire.py
+  files.py         FileJail (SFTP-jail)
+  auth.py          PAM / authorized_keys
+server_gui/        rd-server-gui: PySide6-панель управления сервером
+  controller.py    Тестируемая логика без Qt (ConfigController, ServiceController)
+  __main__.py      GUI-окно + трей
+crypto/            keygen.py — генерация ed25519-ключей
+scripts/           install.sh · install.ps1 · install-{client,server}-linux.sh · install-client-windows.ps1 · release.sh
+packaging/systemd/ ssh-remote-desktop.service — шаблон юнита
+tests/             pytest + pytest-asyncio
+build_*.sh         Сборка standalone-бинарей через Nuitka
+```
+
+</details>
+
+## Установка (подробно)
+
+<details>
+<summary><strong>Универсальный установщик <code>scripts/install.sh</code></strong></summary>
+
+По умолчанию ставит готовый бинарь из последнего релиза (с проверкой SHA256 из `SHA256SUMS`). Если ассета для вашей платформы нет — собирает из исходников.
 
 ```bash
-pip install .[server]
+curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.sh | bash
 ```
 
-#### Всё сразу (dev / Linux-десктоп)
+**Флаги:**
+
+| Флаг | Описание |
+|---|---|
+| `--run` | Установка стабильного релиза (по умолчанию) |
+| `--dev` | Git clone + editable `pip install -e .` |
+| `--both` | Dev checkout + сборка бинаря |
+| `--build` | Форсировать сборку через Nuitka |
+| `--no-build` | Пропустить сборку бинарей |
+| `--from-source` | Всегда из исходников, игнорировать релизы |
+| `--version X.Y.Z` | Конкретный релиз |
+| `--component client\|server\|both` | Что ставить (по умолчанию: `both` на Linux, `client` на остальных) |
+| `--dir PATH` | Директория установки |
+| `--python BIN` | Конкретный интерпретатор |
+| `--uninstall` | Полностью удалить (бинарь, venv, симлинки, пустой конфиг) |
+| `-h, --help` | Справка |
+
+**Переменная окружения:** `SSH_REMOTE_DESKTOP_DIR` — директория установки (по умолчанию `~/.local/share/ssh-remote-desktop`; для серверного wrapper-скрипта — `/opt/ssh-remote-desktop`).
+
+</details>
+
+<details>
+<summary><strong>Установка вручную через pip extras</strong></summary>
 
 ```bash
-pip install -e .[client,server,dev]
+git clone https://github.com/hirokyserega-web/ssh-remote-desktop.git
+cd ssh-remote-desktop
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
 ```
 
-
-Пакет разбит на опциональные extras, чтобы клиент можно было установить на
-Windows/macOS без Linux-зависимостей, а сервер — на Linux без GUI-библиотек.
-
-### Только клиент (Windows / macOS / Linux)
+**Extras** (из `pyproject.toml`):
 
 ```bash
-pip install .[client]
+# Клиент на любой ОС
+pip install "ssh-remote-desktop[client]"
+
+# Сервер на Linux (X11)
+pip install "ssh-remote-desktop[server,server-x11]"
+
+# Сервер на Linux (Wayland)
+pip install "ssh-remote-desktop[server,server-wayland]"
+
+# Графическая панель сервера
+pip install "ssh-remote-desktop[server-gui]"
+
+# H.264/H.265 — нужен PyAV (ffmpeg)
+pip install "ssh-remote-desktop[h264]"
+
+# JPEG-only — достаточно Pillow
+pip install "ssh-remote-desktop[jpeg]"
+
+# Всё для Linux-хоста с клиентом и сервером
+pip install "ssh-remote-desktop[linux-full]"
+
+# Разработка: pytest + pytest-asyncio + ruff
+pip install "ssh-remote-desktop[dev]"
 ```
 
-### Сервер (Linux: X11 + Wayland)
+**Системные пакеты Linux** ставятся `install.sh` автоматически. Для ручной установки см. комментарии в `scripts/install.sh` (раздел `install_system_deps`): для Debian/Ubuntu это `xvfb xauth xclip ffmpeg qt6-wayland libxcb-* libdbus-1-3 openssh-server` и т.д.
 
-```bash
-pip install .[server]
-```
-
-### Всё сразу (dev / Linux-десктоп)
-
-```bash
-pip install -e .[client,server,dev]
-```
-
----
+</details>
 
 ## Запуск сервера
 
-```bash
-# Минимум: запустить на порту 2222
-sudo -E python -m server
+<details>
+<summary><strong>Передний план (по умолчанию, также под systemd)</strong></summary>
 
-# С явными параметрами
-sudo -E python -m server --port 2222 --backend auto --fps 30 \
-  --shared-dir ~/shared --max-sessions 5
+```bash
+rd-server --config /etc/ssh-remote-desktop/server.toml
+# или с переопределениями из CLI
+rd-server --host 0.0.0.0 --port 2222 --backend auto --codec h264 --max-sessions 10
 ```
 
-При первом запуске сервер автоматически сгенерирует SSH host-ключ
-(`~/.config/ssh-remote-desktop/host_ed25519`). Если планируете ставить
-клиент в production — лучше заранее положить стабильный ключ по этому пути.
+SIGTERM/SIGINT вызывают чистый `Broker.shutdown()`. PID-file по умолчанию: `/run/ssh-remote-desktop.pid` (под root) или `~/.config/ssh-remote-desktop/rd-server.pid` (под пользователем); переопределяется через `--pidfile`.
 
-### Демон и systemd
+</details>
 
-Помимо запуска в foreground, сервер умеет работать как классический демон
-(double-fork + `setsid`) и как systemd-юнит:
+<details>
+<summary><strong>Демон (<code>--daemon</code> / <code>--stop</code> / <code>--status</code>)</strong></summary>
 
 ```bash
-# Запустить в фоне (PID пишется в --pidfile, по умолчанию /run/... или
-# ~/.config/ssh-remote-desktop/rd-server.pid при запуске без root).
-sudo rd-server --daemon --port 2222
-sudo rd-server --status     # state / pid / port
-sudo rd-server --stop       # SIGTERM + ожидание выхода
+# Запустить в фоне (double-fork + setsid; stdio → --log-file или /dev/null)
+rd-server --daemon --config /etc/ssh-remote-desktop/server.toml --log-file /var/log/rd-server.log
 
-# Установить/удалить системный юнит (генерирует packaging/systemd/*.service
-# с реальным путём к бинарю и опциональным --config).
-sudo rd-server --install-service
+# Проверить состояние
+rd-server --status
+# → running | stopped, pid, port, host
+
+# Остановить (SIGTERM по pidfile)
+rd-server --stop
+```
+
+Демон не стартует, если в pidfile уже записан живой PID — сначала `--stop`. Реализовано в `server/daemon.py`.
+
+</details>
+
+<details>
+<summary><strong>systemd-юнит</strong></summary>
+
+Шаблон юнита: `packaging/systemd/ssh-remote-desktop.service` (`Type=simple`, `User=root`, `Restart=on-failure`). Команды `rd-server` сами рендерят юнит с реальным путём к бинарю, кладут его в `/etc/systemd/system/`, делают `daemon-reload` и `enable --now`:
+
+```bash
+# Установить и включить автозапуск
+sudo rd-server --install-service --config /etc/ssh-remote-desktop/server.toml
+
+# Только включить/выключить автозапуск уже установленного юнита
+sudo rd-server --enable-service
+sudo rd-server --disable-service
+
+# Полностью удалить: stop + disable + rm юнита + daemon-reload
 sudo rd-server --uninstall-service
-sudo rd-server --enable-service     # автозапуск при загрузке
 ```
 
-Под systemd сервер всегда работает в foreground (без double-fork), а логи
-собирает journald. Юнит запускается от root (нужны PAM, Xvfb, setuid), сам
-сервер сбрасывает привилегии до подключающегося пользователя.
-
-### Графическая панель (rd-server-gui)
-
-Для управления сервером без редактирования TOML вручную есть отдельная Qt
-панель — `rd-server-gui` (PySide6, те же тема и RU/EN, что у клиента):
+После установки сервис управляется стандартно:
 
 ```bash
-rd-server-gui                    # окно настроек
-rd-server-gui --tray             # свернуть в системный трей
-rd-server-gui --minimized        # стартовать свёрнутым в трей
+sudo systemctl status ssh-remote-desktop.service
+sudo journalctl -u ssh-remote-desktop.service -f
 ```
 
-Панель показывает: сеть (host/port/backend), лимиты сессий, кодирование
-(codec/fps/bitrate), общую папку, тумблеры аутентификации
-(`allow_password` / `allow_publickey`), запуск от имени пользователя и
-журналирование. Секция «Управление сервером» — старт/стоп/перезапуск и
-живой статус (PID, порт, состояние) через systemd (если юнит установлен)
-или daemon-режим; тумблер «Автозапуск при загрузке» включает/выключает
-юнит. Снизу — хвост лога сервера. **Секреты (пароли, приватные ключи) в
-GUI не редактируются и не сохраняются** — только безопасные поля; при
-загрузке `server.toml` со случайным `password = "..."` это поле
-молча отбрасывается.
+</details>
 
-### Под X11 (Xvfb)
-
-По умолчанию `backend=auto` определяет тип сессии по `XDG_SESSION_TYPE`,
-`WAYLAND_DISPLAY` и `DISPLAY`. Чтобы явно поднять X11 даже на машине без
-дисплея, используйте `--backend x11`.
-
-Для каждого подключения сервер:
-
-1. выделяет свободный `:N`,
-2. поднимает `Xvfb :N -screen 0 1920x1080x24 -auth <xauth-файл>` от имени
-   целевого пользователя,
-3. генерирует XAUTHORITY-cookie (`xauth add`),
-4. (опционально) запускает WM/DE из `window_manager` конфига,
-5. сбрасывает привилегии на UID/GID пользователя и подключается к
-   дисплею через python-xlib.
-
-Права:
-
-- `Xvfb`, `xauth`, `python-xlib` — без root не работают; сервер
-  запускается от root, worker'ы — от имени пользователя (через
-  `setuid/setgid` + `initgroups`).
-
-### Под Wayland (headless-композитор)
+<details>
+<summary><strong>Графическая панель <code>rd-server-gui</code></strong></summary>
 
 ```bash
-sudo -E python -m server --backend wayland --wayland-compositor sway
+rd-server-gui                              # открыть окно с дефолтным config-путём
+rd-server-gui --config /etc/ssh-remote-desktop/server.toml
+rd-server-gui --tray                       # включить значок в трее (по умолчанию)
+rd-server-gui --no-tray                    # без трея
+rd-server-gui --minimized                  # стартовать свёрнутой в трей
 ```
 
-Поддерживаются: `sway` (`WLR_BACKENDS=headless`), `weston`
-(`--backend=headless-backend.so`), `kwin_wayland --virtual`,
-`gnome-remote-desktop` (headless).
+Панель (`server_gui/`) позволяет:
 
-Каждый пользователь получает:
+- редактировать `server.toml` (host/port/backend/limits/codec/auth-тогглы/`run_as_user`/логирование) с валидацией и атомарным сохранением;
+- старт/стоп/рестарт сервера — через systemd, если юнит установлен, иначе через `rd-server --daemon/--stop`;
+- смотреть live-статус (running/stopped, PID, port) и хвост лога (journald для systemd, `--log-file` для демона);
+- тогглить «Автозапуск при загрузке» (только для systemd);
+- сворачиваться в трей с пунктом «Свернуть в трей при закрытии».
 
-- свой `WAYLAND_DISPLAY=wayland-N`,
-- свой `XDG_RUNTIME_DIR=/run/user/<uid>`,
-- отдельный headless-композитор, запущенный от его имени.
+Конфиг-контроллер вынесен в `server_gui/controller.py` и тестируется без Qt. Секреты в конфиг не пишутся.
 
-Захват экрана идёт через `org.freedesktop.portal.ScreenCast` (PipeWire) —
-у пользователя в сессии должен быть запущен `xdg-desktop-portal` (любой
-backend: `-gtk`, `-kde`, `-wlr`). Для wlroots-композиторов лёгкая
-альтернатива — протокол `wlr-screencopy` (см.
-`file 'server/backend/wayland_pipewire.py'` — модуль подключается, если
-в окружении есть `gi.repository` с PipeWire).
+</details>
 
-Ввод:
+<details>
+<summary><strong>Под X11 (Xvfb)</strong></summary>
 
-- `uinput` (`/dev/uinput`, `python-evdev`) — основной путь;
-- `ydotool` — fallback через CLI;
-- Wayland-протоколы `zwlr_virtual_pointer_v1` / `zwp_virtual_keyboard_v1` —
-  для wlroots-композиторов;
-- `org.freedesktop.portal.RemoteDesktop` — для GNOME/KDE.
+Бэкенд `x11` (`server/backend/x11.py`) использует `Xvfb` для headless-дисплея, XTEST — для ввода, XDamage + XFixes — для инкрементального захвата. Параметры в `server.toml`:
 
----
+```toml
+backend = "x11"
+xvfb_bin = "Xvfb"               # путь к бинарнику Xvfb
+window_manager = ""             # опционально: команда WM/DE на сессию
+session_geometry = [1920, 1080]
+session_depth = 24
+```
+
+</details>
+
+<details>
+<summary><strong>Под Wayland (headless-композитор)</strong></summary>
+
+Бэкенд `wayland` (`server/backend/wayland.py` + `wayland_pipewire.py`) использует `xdg-desktop-portal` + PipeWire для ScreenCast и `uinput`/`ydotool` для ввода. Если портал/демон недоступны — `capture()` возвращает **placeholder-кадр**, а ввод и буфер обмена продолжают работать. Это сознательный graceful-degradation, не боевое решение для продакшна.
+
+```toml
+backend = "wayland"
+wayland_compositor = "sway"     # sway | weston | kwin | gnome
+use_uinput = true               # эмуляция ввода через /dev/uinput
+```
+
+</details>
 
 ## Запуск клиента
 
+<details>
+<summary><strong>CLI и подключение</strong></summary>
+
 ```bash
-# По SSH-ключу (по умолчанию)
-python -m client --host my.linux.box --user alice --auth key
-
-# По паролю
-python -m client --host my.linux.box --user alice --auth password
-
-# С указанием путей
-python -m client --host 1.2.3.4 --port 2222 --user alice --auth key \
-  --key-path ~/.ssh/id_ed25519 --codec h264
+rd-client --host YOUR-SERVER --user YOUR-USER --key-path ~/.ssh/id_ed25519
+rd-client --config ~/.config/ssh-remote-desktop/client.toml
+rd-client --keygen                                # только генерация ключа, без запуска GUI
 ```
 
-Полный список флагов: `python -m client --help`.
+**Флаги** (`client/__main__.py`):
 
-### На Linux X11 / Wayland
+| Флаг | Описание |
+|---|---|
+| `--config PATH` | Путь к `client.toml` |
+| `--host`, `--port`, `--user` | Параметры подключения |
+| `--auth {key,password,agent}` | Способ аутентификации |
+| `--key-path PATH` | Путь к приватному ключу |
+| `--codec {h264,h265,jpeg}` | Кодек видео |
+| `--qt-platform {auto,xcb,wayland}` | Принудительный Qt-плагин (Linux) |
+| `--fullscreen` | Стартовать на весь экран |
+| `--no-clipboard` | Отключить синхронизацию буфера обмена |
+| `--keygen` | Только открыть генератор SSH-ключей и выйти |
+| `--log-level` | Уровень логирования |
 
-Клиент автоматически выбирает Qt-платформу:
+Под Linux `QT_QPA_PLATFORM` выбирается автоматически: при наличии `WAYLAND_DISPLAY` — `wayland;xcb` (с fallback на XWayland), иначе `xcb`. HiDPI-скейлинг включён по умолчанию.
 
-| Условие | `QT_QPA_PLATFORM` |
-| --- | --- |
-| есть `WAYLAND_DISPLAY` | `wayland;xcb` (фолбэк на XWayland, если нативный wayland-плагин недоступен) |
-| иначе | `xcb` |
+</details>
 
-Чтобы форсировать: `--qt-platform xcb` или `--qt-platform wayland`.
+<details>
+<summary><strong>На Windows / Linux X11 / Linux Wayland</strong></summary>
 
-HiDPI: Qt6 включает дробное масштабирование по умолчанию. Клиент
-учитывает device pixel ratio при пересчёте координат мыши, чтобы окно
-рабочего стола не «мылилось» и не сбивало клики.
+- **Windows:** установка — `install-client-windows.ps1` (см. [Быстрый старт](#быстрый-старт)). После — `rd-client` в новом шелле, либо `rd-client --keygen` для генерации ключа.
+- **Linux X11:** `rd-client` запускается с `QT_QPA_PLATFORM=xcb`.
+- **Linux Wayland:** `QT_QPA_PLATFORM=wayland;xcb` (нативный Wayland с fallback на XWayland, если Qt-плагин `wayland` отсутствует в сборке).
 
-Полноэкранный режим и захват клавиатуры:
-
-- **X11** — окно получает фокус, нажатия перехватываются окном
-  автоматически.
-- **Wayland** — глобальный grab ограничен из соображений безопасности.
-  Системные сочетания (`Super`, `Alt+Tab`, `Ctrl+Alt+Del`) не
-  перехватываются. Для них в тулбаре клиента есть меню **«Спец.
-  сочетания»** — отправляет нужный chord через протокол напрямую.
-
-### На Windows
-
-PySide6 сам выбирает платформу `windows`. Никаких дополнительных
-настроек не нужно.
-
----
+</details>
 
 ## SSH-ключи
 
-В приложении есть встроенный менеджер ключей: **тулбар → SSH-ключи**.
-
-- Тип: Ed25519 (по умолчанию) или RSA.
-- Опциональная passphrase.
-- Сохранение в выбранную папку (приватный ключ с правами `0600`).
-- Кнопка «Копировать команду установки» даёт однострочник для добавления
-  публичного ключа в `authorized_keys` на сервере:
-
-  ```bash
-  mkdir -p ~/.ssh && chmod 700 ~/.ssh && \
-  echo 'ssh-ed25519 AAAA…' >> ~/.ssh/authorized_keys && \
-  chmod 600 ~/.ssh/authorized_keys
-  ```
-
-Из CLI:
+<details>
+<summary><strong>Генерация и распространение</strong></summary>
 
 ```bash
-python -m client --keygen
+# В клиенте: Help → SSH keys (или флаг --keygen)
+rd-client --keygen
+# Создаст ed25519-ключ в ~/.config/ssh-remote-desktop/id_ed25519
 ```
 
----
+Публичный ключ (`id_ed25519.pub`) нужно добавить в `~/.ssh/authorized_keys` пользователя на сервере. Сервер использует системные аккаунты и PAM (`server/auth.py`), отдельных пользователей не создаёт.
+
+Конфиг клиента по умолчанию:
+
+```toml
+auth = "key"
+key_path = "~/.config/ssh-remote-desktop/id_ed25519"
+known_hosts = "~/.config/ssh-remote-desktop/known_hosts"
+accept_unknown_host = false     # false → TOFU-промпт в UI
+```
+
+`auth` также может быть `"password"` или `"agent"` (использовать ssh-agent).
+
+</details>
 
 ## Буфер обмена
 
-Двусторонняя синхронизация текста (UTF-8) между клиентом и сервером:
+<details>
+<summary><strong>Двунаправленная синхронизация</strong></summary>
 
-- **Сервер.** X11: `xclip` или чтение `CLIPBOARD`/`PRIMARY` selections
-  через `python-xlib`. Wayland: `wl-paste` / `wl-copy` или протокол
-  `wlr-data-control`.
-- **Клиент.** Qt API `QClipboard` — одинаково работает на X11 и Wayland.
-- **Защита от циклов.** Каждое сообщение несёт `origin` (`client` или
-  `server`); только что полученное содержимое запоминается и не
-  отправляется обратно.
-- **Приватность.** В тулбаре переключатель **«Синхр. буфер»** —
-  отключает двустороннюю синхронизацию. По умолчанию ограничение на
-  размер — 1 МБ (`clipboard_max_bytes` в конфиге).
+- **Сервер:** `xclip` под X11, `wl-clipboard` под Wayland.
+- **Клиент:** `QClipboard` из PySide6.
+- Передаётся по каналу `clipboard` нашего мультиплекса.
 
----
+Тогглы и лимиты — в конфигах:
 
-## Общие папки и передача файлов
+```toml
+# server.toml
+clipboard_enabled = true
+clipboard_max_bytes = 1048576     # 1 MiB
 
-Передача байтов идёт через **SFTP-подсистему SSH** (отдельный демон не
-нужен — `asyncssh` умеет и SFTP-клиент, и SFTP-сервер). Управляющие
-команды (список, mkdir, удаление) — по каналу `files`.
+# client.toml
+clipboard_enabled = true
+clipboard_max_bytes = 1048576
+```
 
-Возможности:
+Клиент: флаг `--no-clipboard` на один запуск. Сервер: `--no-clipboard`.
 
-- **Drag-and-drop** файлов в окно рабочего стола → загрузка в
-  `~/shared` (или иной путь из `shared_dir`).
-- **Файловый менеджер** в клиенте: навигация, upload, download, mkdir,
-  удаление.
-- **Прогресс** и **отмена** в реальном времени.
-- **Jail.** Сервер ограничивает все пути заданной папкой — клиент не
-  может выйти за пределы `~/shared` целевого пользователя (см.
-  `file 'server/files.py'`).
-- **Чанки.** `asyncssh` сам стримит крупные файлы блоками, видеоканал
-  не блокируется.
+</details>
 
----
+## Файлы и SFTP
 
-## Многопользовательский режим и сессии
+<details>
+<summary><strong>SFTP-jail и общая папка</strong></summary>
 
-- Аутентификация — по логину/паролю (через PAM) или по SSH-ключу из
-  `~user/.ssh/authorized_keys`.
-- На каждое подключение сервер **создаёт новую изолированную сессию**
-  (отдельный `:N` / `wayland-N`, отдельный cookie, отдельный процесс
-  композитора). Несколько пользователей работают параллельно, не мешая
-  друг другу.
-- Каждая сессия запускается **от имени целевого пользователя** (после
-  успешной аутентификации сервер сбрасывает привилегии на UID/GID и
-  ставит `HOME`, `USER`, `DISPLAY`/`WAYLAND_DISPLAY`, `XAUTHORITY`).
-- Жизненный цикл:
-  - **Создание** при подключении → **работа** → **завершение** при
-    отключении.
-  - Опция `persistent`: оставить сессию висеть для переподключения.
-  - `idle_timeout` (по умолчанию 600 с) — убивает простаивающие
-    не-persistent сессии.
-  - `max_sessions` — глобальный лимит одновременных сессий.
+Передача байтов — через штатный SFTP-subsystem asyncssh, но `FileJail` (`server/files.py`) ограничивает все пути рамками **общей папки сессии**. Абсолютные пути и `..`-траверсал отклоняются; клиент никогда не видит файловую систему сервера за пределами этой папки. Канал `files` в нашем мультиплексоре несёт только команды навигации/статуса.
 
----
+```toml
+# server.toml
+files_enabled = true
+shared_dir = "~/shared"           # относительно HOME каждого пользователя
+sftp_chunk_size = 262144          # 256 KiB
+
+# client.toml
+files_enabled = true
+local_shared_dir = "~/ssh-remote-desktop-shared"
+```
+
+В GUI-клиенте файловый менеджер открывается из тулбара. Сервер: `--no-files` на один запуск.
+
+</details>
+
+## Мультисессии
+
+<details>
+<summary><strong>Модель сессий</strong></summary>
+
+```toml
+# server.toml
+max_sessions = 10                 # лимит одновременных сессий
+idle_timeout = 600                # секунды; 0 отключает
+persistent_default = false        # keep-alive сессий для переподключения
+session_geometry = [1920, 1080]
+session_depth = 24
+```
+
+```toml
+# client.toml
+new_session = true                # запрашивать новую сессию
+persistent = false                # переподключаться к существующей persistent-сессии
+auto_reconnect = true
+reconnect_delay = 2.0
+max_reconnect_attempts = 0        # 0 = бесконечно
+```
+
+`run_as_user = true` (по умолчанию) — сервер понижает привилегии до подключающегося пользователя после аутентификации.
+
+</details>
 
 ## Конфигурация
 
-Файлы конфигурации — TOML или JSON. Пути:
+<details>
+<summary><strong>Пути поиска конфигов</strong></summary>
 
-- Сервер: `~/.config/ssh-remote-desktop/server.toml` (или
-  `/etc/ssh-remote-desktop/server.toml`), переменная
-  `RD_SERVER_CONFIG`, флаг `--config`.
-- Клиент: `~/.config/ssh-remote-desktop/client.toml`, переменная
-  `RD_CLIENT_CONFIG`, флаг `--config`.
+Конфигурация layered: дефолты ← файл (TOML/JSON) ← аргументы CLI.
 
-**Пример server.toml:**
+**Сервер** (`load_server_config`), первый найденный:
+
+1. `RD_SERVER_CONFIG` (env)
+2. `./server.toml`
+3. `~/.config/ssh-remote-desktop/server.toml`
+4. `/etc/ssh-remote-desktop/server.toml`
+
+**Клиент** (`load_client_config`):
+
+1. `RD_CLIENT_CONFIG` (env)
+2. `./client.toml`
+3. `~/.config/ssh-remote-desktop/client.toml`
+
+</details>
+
+<details>
+<summary><strong>Полный <code>server.toml</code> с дефолтами</strong></summary>
 
 ```toml
+# Сеть
 host = "0.0.0.0"
 port = 2222
-backend = "auto"            # "auto" | "x11" | "wayland"
+
+# SSH host key сервера (генерируется при первом запуске, если отсутствует)
+host_key = "~/.config/ssh-remote-desktop/host_ed25519"
+
+# Бэкенд: "auto" | "x11" | "wayland"
+backend = "auto"
+
+# Сессии
 max_sessions = 10
-idle_timeout = 600
+idle_timeout = 600                # секунды; 0 отключает
 persistent_default = false
 session_geometry = [1920, 1080]
 session_depth = 24
 
-codec = "h264"              # h264 | h265 | jpeg | webp
+# Кодирование
+codec = "h264"                    # h264 | h265 | jpeg (fallback на jpeg, если PyAV недоступен)
 fps = 30
 bitrate_kbps = 6000
 jpeg_quality = 80
-cursor_mode = "embedded"    # embedded | metadata
+cursor_mode = "embedded"          # "embedded" | "metadata"
 
+# X11
 xvfb_bin = "Xvfb"
-window_manager = ""         # команда WM/DE на сессию (опц.)
-wayland_compositor = "sway" # sway | weston | kwin | gnome
+window_manager = ""               # опциональная команда WM/DE на сессию
+
+# Wayland
+wayland_compositor = "sway"       # sway | weston | kwin | gnome
 use_uinput = true
 
+# Буфер обмена
 clipboard_enabled = true
-clipboard_max_bytes = 1048576
+clipboard_max_bytes = 1048576     # 1 MiB
 
+# Файлы / SFTP jail
 files_enabled = true
-shared_dir = "~/shared"
-sftp_chunk_size = 262144
+shared_dir = "~/shared"           # относительно HOME каждого пользователя
+sftp_chunk_size = 262144          # 256 KiB
 
+# Аутентификация
 allow_password = true
 allow_publickey = true
-run_as_user = true
+run_as_user = true                # понижать привилегии до подключающегося пользователя
 
+# Логирование
 log_level = "INFO"
 log_file = ""
 ```
 
-**Пример client.toml:**
+</details>
+
+<details>
+<summary><strong>Полный <code>client.toml</code> с дефолтами</strong></summary>
 
 ```toml
-host = "myserver.lan"
+host = ""
 port = 2222
-user = "alice"
-auth = "key"                # key | password | agent
+user = ""
+
+# Аутентификация: "key" | "password" | "agent"
+auth = "key"
 key_path = "~/.config/ssh-remote-desktop/id_ed25519"
 known_hosts = "~/.config/ssh-remote-desktop/known_hosts"
-accept_unknown_host = false
+accept_unknown_host = false       # false → TOFU-промпт в UI
 
+# Запрос сессии
 new_session = true
 persistent = false
 geometry = [1920, 1080]
-codec = "h264"
+codec = "h264"                    # h264 | h265 | jpeg
 
-qt_platform = "auto"        # auto | xcb | wayland
+# Отображение
+qt_platform = "auto"              # auto | xcb | wayland (задаёт QT_QPA_PLATFORM)
 start_fullscreen = false
 scale_to_window = true
 hidpi = true
 
+# Буфер обмена / файлы (приватность)
 clipboard_enabled = true
 clipboard_max_bytes = 1048576
 files_enabled = true
 local_shared_dir = "~/ssh-remote-desktop-shared"
 
+# Переподключение
 auto_reconnect = true
 reconnect_delay = 2.0
-max_reconnect_attempts = 0  # 0 = бесконечно
+max_reconnect_attempts = 0        # 0 = бесконечно
+
+# UI
+theme = "system"                  # "light" | "dark" | "system"
+language = "ru"                   # "ru" | "en"
+jpeg_quality = 80                 # дефолтное JPEG-качество для диалога подключения
 
 log_level = "INFO"
 ```
 
----
+</details>
 
 ## Сборка исполняемых файлов
 
-И клиент, и сервер компилируются в **самостоятельные исполняемые
-файлы**. Предпочтительный путь — **Nuitka** (Python → C → нативный
-бинарь). Альтернатива — PyInstaller (`--onefile`).
+<details>
+<summary><strong>Nuitka — standalone-бинари</strong></summary>
+
+Релизный workflow `.github/workflows/release.yml` на каждый тег `v*` собирает standalone-бинари через Nuitka и публикует GitHub Release с `SHA256SUMS`. Скрипты в корне репо:
 
 ```bash
-# Клиент под Linux
-./build_client_linux.sh
-# -> ./rd-client
-
-# Клиент под Windows (на Windows-машине)
-build_client_windows.sh
-# -> rd-client.exe
-
-# Сервер под Linux
-./build_server_linux.sh
-# -> ./rd-server
+bash build_client_linux.sh        # → dist/rd-client
+bash build_server_linux.sh        # → dist/rd-server
+bash build_client_windows.sh      # → dist/rd-client.exe (под Windows)
+bash build_client_macos.sh        # → dist/rd-client (под macOS, опционально)
 ```
 
-Скрипты лежат в корне репозитория (`build_*.sh`) и по сути делают:
+Локально через `install.sh`:
 
 ```bash
-python -m nuitka --standalone --onefile \
-  --enable-plugin=pyside6 \
-  client/__main__.py        # или server/__main__.py
+curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install.sh | bash -s -- --build
 ```
 
-Все нативные зависимости (Qt-плагины, libxcb, libwayland, evdev) Nuitka
-тянет автоматически. Размер итогового бинаря — порядка 60–100 МБ
-(standalone включает Python-рантайм и все библиотеки).
+Имена release-ассетов: `ssh-remote-desktop-{client,server}-{linux,windows,macos}-{arch}.{tar.gz,zip}`.
 
-**Альтернатива: PyInstaller.**
+Кат релиза — `scripts/release.sh` (`--dry-run`, `--no-push`).
 
-```bash
-pip install pyinstaller
-pyinstaller --noconfirm --onefile --name rd-client   client/__main__.py
-pyinstaller --noconfirm --onefile --name rd-server   server/__main__.py
-```
-
----
+</details>
 
 ## Troubleshooting
 
-**`No module named 'av'`** — H.264 недоступен. Клиент автоматически
-переключится на JPEG-delta. Чтобы включить H.264: `pip install av` (нужен
-ffmpeg в системе).
+<details>
+<summary><strong>Частые проблемы</strong></summary>
 
-**`No module named 'Xlib'`** — X11-backend отключает ввод, остаётся
-только захват через `mss`. Поставьте `pip install python-xlib`.
+- **«rd-server already running (pid N)»** при `--daemon`: живой pidfile. Выполните `rd-server --stop`, затем запускайте снова.
+- **Под Wayland клиенту показывается placeholder-кадр:** портал `xdg-desktop-portal` (и соответствующий backend — `-wlr`/`-gnome`/`-kde`) не запущен. Запустите его и `pipewire`; проверьте логи сервера (`rd-server --status`, `journalctl -u ssh-remote-desktop.service`).
+- **«H.264 encoder init failed; falling back to JPEG»:** PyAV не установлен или ffmpeg без `libx264`. `pip install "ssh-remote-desktop[h264]"` и системный `ffmpeg`.
+- **`Permission denied (publickey)`:** публичный ключ клиента не в `~/.ssh/authorized_keys` пользователя на сервере, либо `allow_publickey = false` в `server.toml`.
+- **PAM-аутентификация не работает:** сервер должен запускаться под root (или через systemd-юнит с `User=root`), чтобы иметь доступ к PAM и понижать привилегии через `run_as_user`.
+- **`~/.local/bin` не в PATH:** `export PATH="$HOME/.local/bin:$PATH"` или откройте новый шелл.
+- **Полное удаление:** `curl -fsSL .../install.sh | bash -s -- --uninstall` (удаляет бинарь, venv, симлинки, пустой конфиг — но НЕ трогает ваши ключи и `known_hosts`).
 
-**`Wayland backend ... uinput unavailable`** — пользователю не хватает
-прав на `/dev/uinput`. Решение:
-
-```bash
-sudo usermod -aG input $USER       # затем перелогиниться
-# или:
-sudo apt install -y uinput-tools   # некоторые дистрибутивы требуют модуль ядра
-sudo modprobe uinput
-```
-
-**Сессия создаётся, но экран чёрный.** Проверьте, что
-`xdg-desktop-portal` запущен в пользовательской сессии
-(`systemctl --user status xdg-desktop-portal`).
-
-**`Password auth failed` на сервере** — сервер требует `python-pam`
-(или PAM-стек через CLI). Установите системный пакет (`apt install
-python3-pam` на Debian) либо используйте аутентификацию по ключу.
-
-**Клиент не видит нативный Wayland-плагин** — клиент автоматически
-откатится на XWayland (`xcb`). Чтобы форсировать: запустите с
-`--qt-platform xcb`.
-
-**`known_hosts` ругается на незнакомый хост** — при первом подключении
-клиент спросит, добавить ли отпечаток сервера в
-`~/.config/ssh-remote-desktop/known_hosts`. Чтобы принять молча (не
-рекомендуется): `--accept-unknown-host`.
-
-**Мышка «отстаёт»** — снизьте битрейт (`--bitrate-kbps 3000`) и
-частоту (`--fps 24`). Клиент также автоматически адаптирует параметры
-по получаемой обратной связи (`stats` → снижение bitrate при loss > 5%
-или RTT > 250 мс).
-
----
+</details>
 
 ## Безопасность
 
-- **Аутентификация** — SSH-ключи или PAM (пароль пользователя
-  системы). Публичный ключ сверяется с
-  `~user/.ssh/authorized_keys` ровно как у OpenSSH.
-- **SFTP-jail** — все файловые операции ограничены `shared_dir`
-  пользователя; попытки выхода через `..` отбрасываются
-  (`file 'server/files.py'`).
-- **Буфер обмена** — имеет жёсткое ограничение на размер
-  (`clipboard_max_bytes`) и может быть отключён на стороне клиента.
-- **Привилегии** — сервер запускается от root (нужен для PAM и
-  старта Xvfb), session worker'ы — от имени целевого пользователя
-  через `setuid/setgid/initgroups`.
-- **Изоляция сессий** — разные пользователи получают разные `:N`
-  (X11) / `WAYLAND_DISPLAY` (Wayland) и разные XAUTHORITY-cookie; они
-  не видят экраны друг друга.
+- **TOFU known_hosts.** При `accept_unknown_host = false` (дефолт клиента) первое подключение к неизвестному хосту показывает промпт в GUI с отпечатком ключа; принятый ключ записывается в `known_hosts` и проверяется при последующих подключениях.
+- **Аутентификация через системные аккаунты / PAM.** Сервер не заводит отдельных пользователей — используются системные аккаунты и PAM (`server/auth.py`). Для PAM сервер запускается под root и понижает привилегии через `run_as_user`.
+- **SFTP-jail.** Все файловые операции ограничены общей папкой сессии (`FileJail`); выход за её пределы через абсолютные пути или `..` отклоняется.
+- **Secret-free GUI.** `rd-server-gui` хранит только публичные настройки (host/port/backend/limits/кодек/тогглы), никогда не пишет секреты в `server.toml`. SSH-ключи остаются в `~/.config/ssh-remote-desktop/` и `~/.ssh/`.
+- **Смена порта по умолчанию.** Дефолт `port = 2222` (не 22). Сменить: `port = ...` в `server.toml` или `--port N` в CLI (одинаково для клиента и сервера).
+- **Отключаемые поверхности.** Буфер обмена и файлы можно отключить на любую сторону (`clipboard_enabled`, `files_enabled`, `--no-clipboard`, `--no-files`) — для минимизации поверхности атаки.
 
-Подробности — в `file 'SECURITY.md'`.
+Подробности — в `SECURITY.md`.
 
----
+## Разработка и contributing
+
+<details>
+<summary><strong>Dev-окружение и проверки</strong></summary>
+
+```bash
+git clone https://github.com/hirokyserega-web/ssh-remote-desktop.git
+cd ssh-remote-desktop
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,linux-full]"
+
+# Линт
+ruff check .
+
+# Тесты (pytest + pytest-asyncio)
+pytest                  # все тесты
+pytest tests/test_daemon.py    # конкретный модуль
+```
+
+CI (`.github/workflows/ci.yml`) прогоняет: Lint (ruff + compile), Installer scripts (`bash -n` + shellcheck), Workflow lint (actionlint), Tests (Linux, Python matrix), Tests (Windows).
+
+Структура репо и модулей — см. [выше](#архитектура).
+
+</details>
+
+См. также `CONTRIBUTING.md` и `AGENTS.md`. PR и issue — на GitHub.
 
 ## Лицензия
 
-MIT — см. `file 'LICENSE'`.
+[MIT](LICENSE) © 2026 hirokyserega-web.
+
+### Благодарности
+
+- [asyncssh](https://www.asyncssh.org/) — SSH-транспорт и SFTP-subsystem.
+- [PyAV](https://github.com/PyAV-Org/PyAV) / ffmpeg — H.264/H.265.
+- [PySide6](https://www.qt.io/) / Qt6 — GUI клиента и панели сервера.
+- [python-xlib](https://github.com/python-xlib/python-xlib), [mss](https://github.com/BoboTiG/python-mss) — X11-захват.
+- [pywayland](https://github.com/flacjacket/pywayland), [evdev](https://python-evdev.org/) — Wayland-бэкенд.

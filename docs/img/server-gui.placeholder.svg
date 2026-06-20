@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="800" viewBox="0 0 720 800">
+  <rect width="720" height="800" fill="#0f1115"/>
+  <text x="360" y="50" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700" fill="#e6e6e6" text-anchor="middle">Настройки сервера</text>
+  <rect x="40" y="80" width="640" height="360" rx="8" fill="#1a1d24"/>
+  <text x="80" y="130" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#9ca3af">Хост:    0.0.0.0</text>
+  <text x="80" y="170" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#9ca3af">Порт:    2222</text>
+  <text x="80" y="210" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#9ca3af">Бэкенд:  auto</text>
+  <text x="80" y="250" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#9ca3af">Кодек:   h264</text>
+  <text x="80" y="290" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#9ca3af">FPS:     30</text>
+  <text x="80" y="330" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#9ca3af">Битрейт: 6000 кбит/с</text>
+  <text x="80" y="370" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#9ca3af">Общая папка: ~/shared</text>
+  <rect x="40" y="460" width="640" height="140" rx="8" fill="#1a1d24"/>
+  <text x="60" y="500" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#22c55e" font-weight="700">Состояние: Запущен   PID: 12345</text>
+  <rect x="60" y="520" width="80" height="28" rx="4" fill="#2563eb"/><text x="100" y="540" font-size="14" fill="white" text-anchor="middle">Старт</text>
+  <rect x="150" y="520" width="80" height="28" rx="4" fill="#7f1d1d"/><text x="190" y="540" font-size="14" fill="white" text-anchor="middle">Стоп</text>
+  <rect x="240" y="520" width="120" height="28" rx="4" fill="#374151"/><text x="300" y="540" font-size="14" fill="white" text-anchor="middle">Перезапуск</text>
+  <rect x="40" y="620" width="640" height="140" rx="8" fill="#0a0c10"/>
+  <text x="60" y="650" font-family="monospace" font-size="12" fill="#6b7280">[INFO] rd.server: broker listening on 0.0.0.0:2222</text>
+  <text x="60" y="670" font-family="monospace" font-size="12" fill="#6b7280">[INFO] rd.server: client connected (user=alice)</text>
+  <text x="360" y="780" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#4b5563" text-anchor="middle">TODO: заменить на реальный скриншот rd-server-gui (docs/img/server-gui.png)</text>
+</svg>
