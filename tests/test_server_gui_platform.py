@@ -16,6 +16,16 @@ import sys
 
 import pytest
 
+# Qt platform / Wayland / X11 / XDG_RUNTIME_DIR logic lives only on Linux
+# (server_gui._setup_qt_platform / _detect_wayland / _ensure_runtime_dir are
+# no-ops on other platforms, and os.getuid / socket.AF_UNIX don't exist on
+# Windows). Skip these on win32 so CI stays green; the parser tests below are
+# cross-platform and run everywhere.
+linux_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Qt platform / Wayland / X11 logic is Linux-only",
+)
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MAIN = os.path.join(ROOT, "server_gui", "__main__.py")
 
@@ -47,6 +57,7 @@ class _Args:
 # --------------------------------------------------------------------------- #
 # _detect_wayland — three independent signals, any one wins
 # --------------------------------------------------------------------------- #
+@linux_only
 def test_detect_wayland_via_wayland_display(monkeypatch):
     m = _load_main()
     _clear_display_env(monkeypatch)
@@ -54,6 +65,7 @@ def test_detect_wayland_via_wayland_display(monkeypatch):
     assert m._detect_wayland() is True
 
 
+@linux_only
 def test_detect_wayland_via_session_type(monkeypatch):
     m = _load_main()
     _clear_display_env(monkeypatch)
@@ -61,6 +73,7 @@ def test_detect_wayland_via_session_type(monkeypatch):
     assert m._detect_wayland() is True
 
 
+@linux_only
 def test_detect_wayland_via_socket_scan(monkeypatch, tmp_path):
     """Menu-launch case: no WAYLAND_DISPLAY, but a wayland-N socket exists."""
     m = _load_main()
@@ -77,6 +90,7 @@ def test_detect_wayland_via_socket_scan(monkeypatch, tmp_path):
         sock_path.unlink(missing_ok=True)
 
 
+@linux_only
 def test_detect_wayland_false_on_x11(monkeypatch):
     m = _load_main()
     _clear_display_env(monkeypatch)
@@ -88,6 +102,7 @@ def test_detect_wayland_false_on_x11(monkeypatch):
 # --------------------------------------------------------------------------- #
 # _setup_qt_platform — the core fix: never force offscreen on a real desktop
 # --------------------------------------------------------------------------- #
+@linux_only
 def test_setup_picks_xcb_on_x11(monkeypatch):
     m = _load_main()
     _clear_display_env(monkeypatch)
@@ -98,6 +113,7 @@ def test_setup_picks_xcb_on_x11(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] != "offscreen"
 
 
+@linux_only
 def test_setup_picks_wayland_xcb_on_wayland(monkeypatch):
     m = _load_main()
     _clear_display_env(monkeypatch)
@@ -107,6 +123,7 @@ def test_setup_picks_wayland_xcb_on_wayland(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] != "offscreen"
 
 
+@linux_only
 def test_setup_respects_explicit_env(monkeypatch):
     """An already-exported QT_QPA_PLATFORM is honoured untouched."""
     m = _load_main()
@@ -116,6 +133,7 @@ def test_setup_respects_explicit_env(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "minimal"
 
 
+@linux_only
 def test_setup_respects_explicit_choice(monkeypatch):
     """--qt-platform=xcb wins even under Wayland."""
     m = _load_main()
@@ -125,6 +143,7 @@ def test_setup_respects_explicit_choice(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "xcb"
 
 
+@linux_only
 def test_setup_offscreen_when_no_display(monkeypatch):
     """Headless box with no display signal: offscreen so the panel constructs."""
     m = _load_main()
@@ -136,6 +155,7 @@ def test_setup_offscreen_when_no_display(monkeypatch):
 # --------------------------------------------------------------------------- #
 # Explicit headless requests force offscreen even with a display present
 # --------------------------------------------------------------------------- #
+@linux_only
 def test_offscreen_flag_forces_offscreen_with_display(monkeypatch):
     m = _load_main()
     _clear_display_env(monkeypatch)
@@ -144,6 +164,7 @@ def test_offscreen_flag_forces_offscreen_with_display(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
 
 
+@linux_only
 def test_qt_platform_offscreen_forces_offscreen_with_display(monkeypatch):
     m = _load_main()
     _clear_display_env(monkeypatch)
@@ -153,6 +174,7 @@ def test_qt_platform_offscreen_forces_offscreen_with_display(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
 
 
+@linux_only
 def test_rd_headless_forces_offscreen_with_display(monkeypatch):
     m = _load_main()
     _clear_display_env(monkeypatch)
@@ -164,6 +186,7 @@ def test_rd_headless_forces_offscreen_with_display(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
 
 
+@linux_only
 def test_ci_does_not_force_offscreen_with_display(monkeypatch):
     """CI=true must NOT force offscreen when a display is available.
 
@@ -183,6 +206,7 @@ def test_ci_does_not_force_offscreen_with_display(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "xcb"
 
 
+@linux_only
 def test_explicit_env_beats_headless_flag(monkeypatch):
     """A user-set QT_QPA_PLATFORM is sacred — even --offscreen won't clobber it.
 
@@ -203,6 +227,7 @@ def test_explicit_env_beats_headless_flag(monkeypatch):
 # --------------------------------------------------------------------------- #
 # _ensure_runtime_dir — recovers XDG_RUNTIME_DIR for menu-launched apps
 # --------------------------------------------------------------------------- #
+@linux_only
 def test_ensure_runtime_dir_noop_when_set(monkeypatch):
     m = _load_main()
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/tmp/already-set")
@@ -210,6 +235,7 @@ def test_ensure_runtime_dir_noop_when_set(monkeypatch):
     assert os.environ["XDG_RUNTIME_DIR"] == "/tmp/already-set"
 
 
+@linux_only
 def test_ensure_runtime_dir_recovers_from_run_user(monkeypatch, tmp_path):
     m = _load_main()
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
@@ -275,7 +301,7 @@ def _make_main_mocks(monkeypatch, m):
     return _FakeApp, _FakeQApp
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Qt platform logic is Linux-only")
+@linux_only
 def test_main_does_not_force_offscreen_with_display(monkeypatch):
     """main() with DISPLAY set and no headless request must leave
     QT_QPA_PLATFORM on xcb (or wayland;xcb), never offscreen."""
@@ -304,7 +330,7 @@ def test_main_does_not_force_offscreen_with_display(monkeypatch):
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Qt platform logic is Linux-only")
+@linux_only
 def test_main_forces_offscreen_when_headless(monkeypatch):
     """Conversely, RD_HEADLESS=1 makes main() go offscreen even with DISPLAY."""
     m = _load_main()
