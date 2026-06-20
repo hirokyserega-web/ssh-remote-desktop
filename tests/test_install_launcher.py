@@ -15,11 +15,23 @@ import os
 import re
 import socket
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 LAUNCHER = REPO / "scripts" / "rd-launch.sh"
 INSTALL = REPO / "scripts" / "install.sh"
+
+# rd-launch is a bash session-env wrapper for Wayland/X11, and the client's
+# _detect_wayland / _setup_qt_platform only run on Linux (they no-op on other
+# platforms, and socket.AF_UNIX / bash aren't available on Windows CI). Skip
+# those on win32; the heredoc-sync test below is pure text and runs everywhere.
+linux_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="rd-launch / Wayland / Qt-platform logic is Linux-only",
+)
 
 
 def _executable_logic(text: str) -> str:
@@ -46,10 +58,10 @@ def test_install_sh_heredoc_matches_rd_launch():
     )
 
 
+@linux_only
 def test_rd_launch_recovers_wayland_display_from_socket(tmp_path):
     """Menu-launched env lacks WAYLAND_DISPLAY; rd-launch must rebuild it."""
     if not LAUNCHER.exists():
-        import pytest
         pytest.skip("scripts/rd-launch.sh not present")
     # Create a real AF_UNIX socket named wayland-0 in the runtime dir so the
     # wrapper's `[[ -S "$cand" ]]` test passes.
@@ -81,6 +93,7 @@ def test_rd_launch_recovers_wayland_display_from_socket(tmp_path):
         sock_path.unlink(missing_ok=True)
 
 
+@linux_only
 def test_rd_launch_missing_binary_arg_fails():
     """rd-launch with no binary argument must exit non-zero, not hang."""
     result = subprocess.run(
@@ -102,6 +115,7 @@ def _load_main():
     return mod
 
 
+@linux_only
 def test_detect_wayland_via_wayland_display(monkeypatch):
     m = _load_main()
     for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "DISPLAY", "XDG_RUNTIME_DIR", "QT_QPA_PLATFORM"):
@@ -110,6 +124,7 @@ def test_detect_wayland_via_wayland_display(monkeypatch):
     assert m._detect_wayland() is True
 
 
+@linux_only
 def test_detect_wayland_via_session_type(monkeypatch):
     m = _load_main()
     for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "DISPLAY", "XDG_RUNTIME_DIR", "QT_QPA_PLATFORM"):
@@ -118,6 +133,7 @@ def test_detect_wayland_via_session_type(monkeypatch):
     assert m._detect_wayland() is True
 
 
+@linux_only
 def test_detect_wayland_via_socket_scan(monkeypatch, tmp_path):
     """The menu-launch case: no WAYLAND_DISPLAY, but a wayland-N socket exists."""
     m = _load_main()
@@ -135,6 +151,7 @@ def test_detect_wayland_via_socket_scan(monkeypatch, tmp_path):
         sock_path.unlink(missing_ok=True)
 
 
+@linux_only
 def test_detect_wayland_false_on_x11(monkeypatch):
     m = _load_main()
     for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "DISPLAY", "XDG_RUNTIME_DIR", "QT_QPA_PLATFORM"):
@@ -144,6 +161,7 @@ def test_detect_wayland_false_on_x11(monkeypatch):
     assert m._detect_wayland() is False
 
 
+@linux_only
 def test_setup_qt_platform_picks_xcb_on_x11(monkeypatch):
     m = _load_main()
     for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "DISPLAY", "XDG_RUNTIME_DIR", "QT_QPA_PLATFORM"):
@@ -156,6 +174,7 @@ def test_setup_qt_platform_picks_xcb_on_x11(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "xcb"
 
 
+@linux_only
 def test_setup_qt_platform_picks_wayland_xcb_on_wayland(monkeypatch):
     m = _load_main()
     for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "DISPLAY", "XDG_RUNTIME_DIR", "QT_QPA_PLATFORM"):
@@ -167,6 +186,7 @@ def test_setup_qt_platform_picks_wayland_xcb_on_wayland(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "wayland;xcb"
 
 
+@linux_only
 def test_setup_qt_platform_respects_explicit_env(monkeypatch):
     m = _load_main()
     monkeypatch.setenv("QT_QPA_PLATFORM", "minimal")
@@ -176,6 +196,7 @@ def test_setup_qt_platform_respects_explicit_env(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "minimal"
 
 
+@linux_only
 def test_setup_qt_platform_respects_explicit_choice(monkeypatch):
     m = _load_main()
     for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "DISPLAY", "XDG_RUNTIME_DIR", "QT_QPA_PLATFORM"):

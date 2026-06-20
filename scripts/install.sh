@@ -22,6 +22,7 @@ MODE="run"      # run | dev | both
 BUILD="auto"    # auto | yes | no
 PYTHON_BIN=""
 UNINSTALL="no"
+DIAGNOSE="no"
 VERSION=""      # specific release version (X.Y.Z), empty = latest
 FROM_SOURCE="no"
 COMPONENT=""    # client | server | both; empty = auto (both on linux, client elsewhere)
@@ -42,6 +43,8 @@ Usage: install.sh [options]
   --from-source    Skip release binaries; always build from source
   --component C    client | server | both (default: both on Linux, client elsewhere)
   --uninstall      Remove the install (binary, venv, sources, symlinks, empty config)
+  --diagnose       Print diagnostics (PATH, Qt platform, system libs) and exit
+  --doctor         Alias for --diagnose
   -h, --help       Show this help
 
 Environment:
@@ -81,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     --from-source) FROM_SOURCE="yes"; shift;;
     --component) COMPONENT="$2"; shift 2;;
     --uninstall) UNINSTALL="yes"; shift;;
+    --diagnose|--doctor) DIAGNOSE="yes"; shift;;
     -h|--help) usage; exit 0;;
     *) err "unknown argument: $1"; usage; exit 1;;
   esac
@@ -101,13 +105,36 @@ detect_arch() {
 }
 
 detect_distro() {
+  DISTRO="unknown"
+  DISTRO_LIKE=""
   if [[ -f /etc/os-release ]]; then
     # shellcheck disable=SC1091
     . /etc/os-release
     DISTRO="${ID:-unknown}"
-  else
-    DISTRO="unknown"
+    DISTRO_LIKE="${ID_LIKE:-}"
   fi
+  # Map Arch/Debian/RHEL/SUSE derivatives that aren't a family we dispatch on
+  # directly onto their parent family via ID_LIKE, so Garuda / ArcoLinux /
+  # CachyOS / … get the Arch package set instead of falling into the
+  # "install manually" branch. Known exact IDs keep their own value.
+  case "$DISTRO" in
+    ubuntu|debian|linuxmint|pop|\
+    fedora|rhel|centos|rocky|almalinux|\
+    arch|manjaro|endeavouros|garuda|arcolinux|\
+    opensuse*|sles|alpine)
+      ;;
+    *)
+      for like in $DISTRO_LIKE; do
+        case "$like" in
+          debian|ubuntu|linuxmint|pop) DISTRO="ubuntu"; break;;
+          rhel|fedora|centos|rocky|almalinux) DISTRO="fedora"; break;;
+          arch|manjaro) DISTRO="arch"; break;;
+          suse|opensuse|sles) DISTRO="opensuse"; break;;
+          alpine) DISTRO="alpine"; break;;
+        esac
+      done
+      ;;
+  esac
 }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
@@ -158,7 +185,7 @@ pkg_install() {
     fedora|rhel|centos|rocky|almalinux)
       sudo -n dnf install -y "${pkgs[@]}"
       ;;
-    arch|manjaro|endeavouros)
+    arch|manjaro|endeavouros|garuda|arcolinux)
       sudo -n pacman -S --noconfirm --needed "${pkgs[@]}"
       ;;
     opensuse*|sles)
@@ -429,11 +456,13 @@ install_system_deps() {
         openssh-server ffmpeg xdg-utils \
         || true
       ;;
-    arch|manjaro|endeavouros)
+    arch|manjaro|endeavouros|garuda|arcolinux)
       pkg_install \
         python python-pip \
         qt6-base qt6-wayland \
-        xcb-util-cursor libxkbcommon-x11 wayland \
+        xcb-util-cursor xcb-util-keysyms xcb-util-wm \
+        xcb-util-image xcb-util-renderutil \
+        libxkbcommon-x11 wayland \
         xorg-server-xvfb xauth xclip \
         openssh ffmpeg xdg-utils \
         || true
@@ -452,7 +481,7 @@ install_system_deps() {
   case "$DISTRO" in
     ubuntu|debian|linuxmint|pop) pkg_install python3-pam || pkg_install libpam0g-dev || true;;
     fedora|centos|rhel|rocky|almalinux) pkg_install python-pam pam-devel || true;;
-    arch|manjaro|endeavouros) pkg_install python-pam || true;;
+    arch|manjaro|endeavouros|garuda|arcolinux) pkg_install python-pam || true;;
     alpine) pkg_install py3-pam || true;;
   esac
 }
@@ -675,24 +704,125 @@ install_desktop_entries() {
 }
 
 # Idempotently ensure $HOME/.local/bin is on PATH for interactive shells, so a
-# user can type `rd-client` in a fresh terminal without manual setup. Only
-# touches the user's own rc files (skipped when running as root).
+# user can type `rd-client` / `rd-server-gui` in a fresh terminal without
+# manual setup. Only touches the user's own rc files (skipped when root).
+# Checks whether ~/.local/bin is already on PATH for *this* session; if not,
+# appends the right line to the rc matching $SHELL (bash / zsh / fish) once
+# (marker-guarded — never duplicated on re-runs) and prints the exact line to
+# run for the current session.
+# True when running as root (EUID 0). Extracted so tests can override it without
+# dropping privileges (setpriv fails under non-root CI runners, and EUID is
+# readonly in bash).
+srd_is_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
+
 ensure_path() {
   [[ "$OS" == "linux" ]] || return 0
-  [[ "${EUID:-$(id -u)}" -eq 0 ]] && return 0
+  srd_is_root && return 0
+  local bindir="$HOME/.local/bin"
+  # Already on PATH in this session — nothing to do.
+  case ":${PATH:-}:" in
+    *:"$bindir":*) return 0;;
+  esac
+  # Pick the rc that matches the user's login shell.
+  local sh="${SHELL:-/bin/bash}" rc=""
+  case "$sh" in
+    *fish) rc="$HOME/.config/fish/config.fish";;
+    *zsh)  rc="$HOME/.zshrc";;
+    *)     rc="$HOME/.bashrc";;
+  esac
   local marker='# ssh-remote-desktop installer: local bin on PATH'
-  local line="export PATH=\"\$HOME/.local/bin:\$PATH\"  ${marker}"
-  local touched=0
-  for rc in "$HOME/.bashrc" "$HOME/.profile"; do
-    [[ -f "$rc" ]] || continue
+  if [[ -n "$rc" ]]; then
+    mkdir -p "$(dirname "$rc")"
     if ! grep -qF "$marker" "$rc" 2>/dev/null; then
-      printf '\n%s\n' "$line" >> "$rc"
-      touched=1
+      if [[ "$rc" == *config.fish ]]; then
+        # shellcheck disable=SC2016  # $HOME and $PATH are literal for the rc file
+        printf '\nset -gx PATH $HOME/.local/bin $PATH  %s\n' "$marker" >> "$rc"
+      else
+        # shellcheck disable=SC2016  # $HOME and $PATH are literal for the rc file
+        printf '\nexport PATH="$HOME/.local/bin:$PATH"  %s\n' "$marker" >> "$rc"
+      fi
+      log "Added $HOME/.local/bin to PATH in $rc (takes effect in a new shell)."
+    fi
+  fi
+  # Warn with the exact line to run for the current session — even if the rc
+  # already had it (this shell still lacks it).
+  warn "$HOME/.local/bin is not on PATH for this session."
+  if [[ "$rc" == *config.fish ]]; then
+    # shellcheck disable=SC2016  # literal user-facing hint, not expansion
+    printf '    set -gx PATH $HOME/.local/bin $PATH\n' >&2
+  else
+    # shellcheck disable=SC2016  # literal user-facing hint, not expansion
+    printf '    export PATH="$HOME/.local/bin:$PATH"\n' >&2
+  fi
+  printf '  (added to %s; run the line above now, or open a new shell)\n' "$rc" >&2
+}
+
+# ---- diagnostics ----------------------------------------------------------
+# Print a self-contained health report: which rd-* commands resolve on PATH
+# and where they point (flagging broken symlinks), whether ~/.local/bin is on
+# PATH, the effective Qt platform + display env, and the presence of the
+# system libraries Qt6 needs for the xcb/wayland plugins. Exits 0 so it can be
+# run any time without side effects.
+do_diagnose() {
+  log "ssh-remote-desktop diagnostics"
+  echo
+  echo "== Commands on PATH =="
+  local name p target
+  for name in rd-server rd-client rd-server-gui rd-launch; do
+    p="$(command -v "$name" 2>/dev/null || true)"
+    if [[ -n "$p" ]]; then
+      target="$(readlink -f "$p" 2>/dev/null || true)"
+      if [[ -n "$target" && "$target" != "$p" ]]; then
+        printf '  %-16s %s -> %s\n' "$name" "$p" "$target"
+      else
+        printf '  %-16s %s\n' "$name" "$p"
+      fi
+      if [[ ! -e "${target:-$p}" ]]; then
+        printf '    ! BROKEN: target does not exist\n'
+      fi
+    else
+      printf '  %-16s NOT FOUND on PATH\n' "$name"
     fi
   done
-  if [[ "$touched" -eq 1 ]]; then
-    log "Added ~/.local/bin to PATH in ~/.bashrc / ~/.profile (takes effect in a new shell)."
+  echo
+  echo "== PATH =="
+  local bindir="$HOME/.local/bin"
+  if [[ ":${PATH:-}:" == *":${bindir}:"* ]]; then
+    echo "  $bindir is on PATH"
+  else
+    echo "  $bindir is NOT on PATH"
+    # shellcheck disable=SC2016  # literal user-facing hint, not expansion
+    echo '    fix: export PATH="$HOME/.local/bin:$PATH"'
   fi
+  echo
+  echo "== Qt platform =="
+  printf '  QT_QPA_PLATFORM=%s\n' "${QT_QPA_PLATFORM:-<unset>}"
+  printf '  DISPLAY=%s  WAYLAND_DISPLAY=%s\n' "${DISPLAY:-<unset>}" "${WAYLAND_DISPLAY:-<unset>}"
+  printf '  XDG_SESSION_TYPE=%s\n' "${XDG_SESSION_TYPE:-<unset>}"
+  echo
+  if [[ "$OS" == "linux" ]]; then
+    echo "== System libraries (Qt6 xcb/wayland) =="
+    local lib found dir
+    for lib in libxcb-cursor.so libxcb-keysyms.so libxcb-wm.so libxcb-image.so \
+               libxcb-render-util.so libxkbcommon-x11.so libwayland-client.so libEGL.so; do
+      found="$( { ldconfig -p 2>/dev/null || true; } | awk -v l="$lib" '$0 ~ l {print $NF; exit}')"
+      if [[ -z "$found" ]]; then
+        for dir in /usr/lib /usr/lib/x86_64-linux-gnu /usr/lib64 /lib /lib64; do
+          if [[ -e "$dir/$lib" ]]; then found="$dir/$lib"; break; fi
+        done
+      fi
+      if [[ -n "$found" ]]; then
+        printf '  %-24s OK (%s)\n' "$lib" "$found"
+      else
+        printf '  %-24s MISSING\n' "$lib"
+      fi
+    done
+    echo
+  fi
+  echo "== Troubleshooting =="
+  echo "  If a GUI fails to open with a Qt platform-plugin error, re-run with:"
+  echo "    QT_DEBUG_PLUGINS=1 rd-server-gui   (or rd-client)"
+  echo "  and inspect the plugin load errors printed to stderr."
 }
 
 # ---- post-install wiring ---------------------------------------------------
@@ -761,8 +891,9 @@ do_uninstall() {
     rm -f "$dir/ssh-remote-desktop-client.svg" \
           "$dir/ssh-remote-desktop-server-gui.svg" 2>/dev/null || true
   done
-  command -v update-desktop-database >/dev/null 2>&1 && \
+  if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database >/dev/null 2>&1 || true
+  fi
   # 3. The config dir, but only if it is empty (never wipe user keys/hosts).
   local cfgdir="$HOME/.config/ssh-remote-desktop"
   if [[ -d "$cfgdir" ]] && [[ -z "$(find "$cfgdir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
@@ -781,6 +912,11 @@ main() {
   log "Detected: $OS / $ARCH / ${DISTRO:-n/a}"
   log "Target directory: $TARGET_DIR"
   log "Mode: $MODE (build=$BUILD, from-source=$FROM_SOURCE)"
+
+  if [[ "${DIAGNOSE:-no}" == "yes" ]]; then
+    do_diagnose
+    exit 0
+  fi
 
   do_uninstall
 
@@ -833,4 +969,10 @@ See $TARGET_DIR/README.md for the full guide.
 NEXT
 }
 
-main "$@"
+# Run only when executed or piped (curl|bash), not when sourced by the
+# test-suite (which calls individual functions like ensure_path directly).
+# BASH_SOURCE[1] is set when sourced from another script; SRD_NO_RUN_MAIN=1 is
+# an explicit opt-out for inline `bash -c 'source …'` test harnesses.
+if [[ -z "${BASH_SOURCE[1]:-}" && "${SRD_NO_RUN_MAIN:-0}" != "1" ]]; then
+  main "$@"
+fi
