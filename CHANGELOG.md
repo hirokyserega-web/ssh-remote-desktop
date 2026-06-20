@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Release pipeline wrote SHA256SUMS with a `staging/` path prefix
+  (`staging/<asset>`); `install.sh`'s checksum matcher required a space
+  before the basename and so never matched, silently skipping verification
+  of every downloaded binary. The matcher now accepts a `/`-prefixed path,
+  and the pipeline emits bare asset names.
+
 ## [1.4.0] - 2026-06-20
 
 ### Added
