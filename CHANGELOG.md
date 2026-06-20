@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-20
+
 ### Added
 - `rd-server-gui` Qt platform flags: `--qt-platform {auto,xcb,wayland,offscreen}`
   and `--offscreen`, mirroring the client. Auto-detects Wayland (wayland;xcb)
