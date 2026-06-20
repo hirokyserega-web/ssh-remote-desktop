@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Release Linux binaries are now built on ubuntu-22.04 instead of ubuntu-latest
+  so the onefile executables don't pick up a GLIBC_2.38 requirement from the
+  newer runner.
+
 ## [1.4.1] - 2026-06-20
 
 ### Fixed

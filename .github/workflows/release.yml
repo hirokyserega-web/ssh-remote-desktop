@@ -27,8 +27,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux: client + server (both built on one runner to share deps)
-          - os: ubuntu-latest
+          # Linux: client + server (both built on one runner to share deps).
+          # Pinned to ubuntu-22.04 (glibc 2.35) so the Nuitka onefile binaries
+          # run on the broadest set of Linux distros: Debian 12 (2.36),
+          # Ubuntu 22.04+/24.04, RHEL 9, Fedora 36+, Arch. Building on
+          # ubuntu-latest (24.04, glibc 2.39) produced binaries that required
+          # GLIBC_2.38 and failed to start on older systems.
+          - os: ubuntu-22.04
             label: linux
             build: build_client_linux.sh build_server_linux.sh
             components: client server
