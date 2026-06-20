@@ -40,6 +40,9 @@ h264 = [
 server = [
     "Pillow>=10",
 ]
+server-gui = [
+    "PySide6>=6.6",
+]
 server-x11 = [
     "python-xlib>=0.33 ; sys_platform == 'linux'",
     "mss>=9 ; sys_platform == 'linux'",
@@ -69,6 +72,13 @@ dev = [
 [project.scripts]
 rd-server = "server.__main__:main"
 rd-client = "client.__main__:main"
+rd-server-gui = "server_gui.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["server*", "client*", "common*", "crypto*"]
+include = ["server*", "client*", "common*", "crypto*", "server_gui*"]
+
+[tool.ruff.lint.per-file-ignores]
+# server_gui/__main__.py manipulates sys.path before importing sibling
+# packages (client/server_gui) so it can run as `python -m server_gui` from a
+# checkout. Those intentional imports-after-sys.path are not movable.
+"server_gui/__main__.py" = ["E402"]

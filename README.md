@@ -19,6 +19,8 @@ wlr-протоколы, `uinput` / `ydotool`). Клиент собирается
    - [Установка одной командой (curl / PowerShell)](#установка-одной-командой-curl--powershell)
    - [Установка вручную (extras)](#установка-вручную-extras)
 5. [Запуск сервера](#запуск-сервера)
+   - [Демон и systemd](#демон-и-systemd)
+   - [Графическая панель (rd-server-gui)](#графическая-панель-rd-server-gui)
    - [Под X11 (Xvfb)](#под-x11-xvfb)
    - [Под Wayland (headless-композитор)](#под-wayland-headless-композитор)
 6. [Запуск клиента](#запуск-клиента)
@@ -214,6 +216,51 @@ sudo -E python -m server --port 2222 --backend auto --fps 30 \
 При первом запуске сервер автоматически сгенерирует SSH host-ключ
 (`~/.config/ssh-remote-desktop/host_ed25519`). Если планируете ставить
 клиент в production — лучше заранее положить стабильный ключ по этому пути.
+
+### Демон и systemd
+
+Помимо запуска в foreground, сервер умеет работать как классический демон
+(double-fork + `setsid`) и как systemd-юнит:
+
+```bash
+# Запустить в фоне (PID пишется в --pidfile, по умолчанию /run/... или
+# ~/.config/ssh-remote-desktop/rd-server.pid при запуске без root).
+sudo rd-server --daemon --port 2222
+sudo rd-server --status     # state / pid / port
+sudo rd-server --stop       # SIGTERM + ожидание выхода
+
+# Установить/удалить системный юнит (генерирует packaging/systemd/*.service
+# с реальным путём к бинарю и опциональным --config).
+sudo rd-server --install-service
+sudo rd-server --uninstall-service
+sudo rd-server --enable-service     # автозапуск при загрузке
+```
+
+Под systemd сервер всегда работает в foreground (без double-fork), а логи
+собирает journald. Юнит запускается от root (нужны PAM, Xvfb, setuid), сам
+сервер сбрасывает привилегии до подключающегося пользователя.
+
+### Графическая панель (rd-server-gui)
+
+Для управления сервером без редактирования TOML вручную есть отдельная Qt
+панель — `rd-server-gui` (PySide6, те же тема и RU/EN, что у клиента):
+
+```bash
+rd-server-gui                    # окно настроек
+rd-server-gui --tray             # свернуть в системный трей
+rd-server-gui --minimized        # стартовать свёрнутым в трей
+```
+
+Панель показывает: сеть (host/port/backend), лимиты сессий, кодирование
+(codec/fps/bitrate), общую папку, тумблеры аутентификации
+(`allow_password` / `allow_publickey`), запуск от имени пользователя и
+журналирование. Секция «Управление сервером» — старт/стоп/перезапуск и
+живой статус (PID, порт, состояние) через systemd (если юнит установлен)
+или daemon-режим; тумблер «Автозапуск при загрузке» включает/выключает
+юнит. Снизу — хвост лога сервера. **Секреты (пароли, приватные ключи) в
+GUI не редактируются и не сохраняются** — только безопасные поля; при
+загрузке `server.toml` со случайным `password = "..."` это поле
+молча отбрасывается.
 
 ### Под X11 (Xvfb)
 

@@ -1,0 +1,25 @@
+[Unit]
+Description=SSH Remote Desktop server (X11 + Wayland)
+Documentation=https://github.com/hirokyserega-web/ssh-remote-desktop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ExecStart is filled in by `rd-server --install-service` with the real
+# binary path + optional --config. We always run in the foreground under
+# systemd (no double-fork) and let journald capture stderr.
+ExecStart=@EXEC_START@
+# Root is required for PAM password auth, Xvfb/Xauth, and setuid to the
+# target user. The server drops privileges to the connecting user itself.
+User=root
+Restart=on-failure
+RestartSec=2
+# Allow the server to spawn per-user Xvfb/compositors and bind to SSH ports.
+LimitNOFILE=65536
+# Hardening that doesn't break Xvfb/setuid/PAM:
+NoNewPrivileges=false
+# journald captures stdout/stderr; no separate log file needed.
+
+[Install]
+WantedBy=multi-user.target

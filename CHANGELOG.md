@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Server daemon mode: `rd-server --daemon/--stop/--status` with double-fork,
+  setsid, atomic pidfile, and stdio rebound to `--log-file` (or `/dev/null`).
+  Refuses to start if a live pidfile already points at a running process.
+- Systemd integration: `packaging/systemd/ssh-remote-desktop.service` plus
+  `rd-server install` / `uninstall` subcommands that write the unit to
+  `/etc/systemd/system`, run `daemon-reload`, and optionally `enable --now`.
+- `rd-server-gui` — a PySide6 control panel for the server (host/port/backend/
+  codec/limits/auth toggles/logging), with a Qt-free testable controller, atomic
+  secret-free config writes, start/stop/restart via systemd-or-daemon fallback,
+  live log tail, RU/EN i18n, and light/dark theme.
+- `server-gui` optional extra (`PySide6>=6.6`) and `rd-server-gui` entry point.
+
+### Changed
+- `server.broker` splits `serve_forever` so the pidfile is written between
+  listener start and the run-forever wait (daemon mode).
+- i18n dictionary extended with server-GUI strings (RU/EN).
+
 ## [1.2.0] - 2026-06-20
 
 ## [1.1.0] - 2026-06-20

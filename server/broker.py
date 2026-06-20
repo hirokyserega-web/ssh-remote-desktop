@@ -214,6 +214,16 @@ class Broker:
 
     async def serve_forever(self):
         await self.start()
+        await self.serve_forever_after_start()
+
+    async def serve_forever_after_start(self):
+        """Run the broker until cancelled, then shut it down.
+
+        Counterpart to :meth:`start`: assumes the SSH listener is already up
+        (so this can be scheduled as a task after ``await broker.start()``).
+        Used by ``rd-server`` so the pidfile is written between ``start()``
+        and the run-forever wait.
+        """
         try:
             await asyncio.Future()  # run until cancelled
         finally:
