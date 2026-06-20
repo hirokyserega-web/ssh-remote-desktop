@@ -24,8 +24,12 @@ from typing import Optional
 
 
 def default_pidfile() -> str:
-    """Default pidfile path: ``/run/...`` under root, XDG config otherwise."""
-    if os.geteuid() == 0:
+    """Default pidfile path: ``/run/...`` under root, XDG config otherwise.
+
+    ``os.geteuid`` is Unix-only; on Windows there is no ``/run`` root path, so
+    we always fall through to the XDG config location there.
+    """
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
         return "/run/ssh-remote-desktop.pid"
     return os.path.expanduser("~/.config/ssh-remote-desktop/rd-server.pid")
 

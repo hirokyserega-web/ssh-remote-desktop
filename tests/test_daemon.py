@@ -22,13 +22,15 @@ from server import daemon
 # --------------------------------------------------------------------------- #
 def test_default_pidfile_root_uses_run(monkeypatch):
     # Force the root code path regardless of the real euid, so the test is
-    # deterministic on CI runners (euid != 0) as well as under root.
-    monkeypatch.setattr(daemon.os, "geteuid", lambda: 0)
+    # deterministic on CI runners (euid != 0) as well as under root. Use
+    # raising=False because os.geteuid does not exist on Windows; monkeypatch
+    # then injects it so default_pidfile() exercises the root branch there too.
+    monkeypatch.setattr(daemon.os, "geteuid", lambda: 0, raising=False)
     assert daemon.default_pidfile() == "/run/ssh-remote-desktop.pid"
 
 
 def test_default_pidfile_non_root_uses_xdg(monkeypatch):
-    monkeypatch.setattr(daemon.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(daemon.os, "geteuid", lambda: 1000, raising=False)
     monkeypatch.setattr(daemon.os.path, "expanduser",
                         lambda p: "/home/u" + p[1:] if p.startswith("~") else p)
     assert daemon.default_pidfile() == \
