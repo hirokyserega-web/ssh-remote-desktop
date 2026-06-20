@@ -7,13 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- _nothing yet_
+- `rd-server-gui` Qt platform flags: `--qt-platform {auto,xcb,wayland,offscreen}`
+  and `--offscreen`, mirroring the client. Auto-detects Wayland (wayland;xcb)
+  or X (xcb); offscreen only when no display or explicitly requested.
+- `install.sh --diagnose` / `--doctor`: prints resolved rd-* commands, PATH
+  membership, effective Qt platform, and Qt6 system-library presence.
+- Arch Linux derivative support (Garuda, ArcoLinux, CachyOS, …) via
+  `/etc/os-release` `ID_LIKE` mapping; full xcb-util-* + qt6-wayland package set.
+- `tests/test_server_gui_platform.py` (21 tests) and
+  `tests/test_install_path.py` (10 tests) for the new GUI/install behaviour.
 
 ### Changed
-- _nothing yet_
+- `install-client-linux.sh` defaults to a user-writable dir
+  (`~/.local/share/ssh-remote-desktop`) so the one-liner works without sudo;
+  `/opt` still selectable via `--dir` under sudo.
+- `install.sh ensure_path` now targets the rc matching `$SHELL` (bash/zsh/fish)
+  instead of always editing `~/.bashrc`+`~/.profile`, is idempotent
+  (marker-guarded), and warns with the exact line to run for the current shell.
 
 ### Fixed
-- _nothing yet_
+- `rd-server-gui` no longer hides its window on real desktops: removed the
+  unconditional `QT_QPA_PLATFORM=offscreen` default. An explicit
+  `QT_QPA_PLATFORM` is now sacred; `--qt-platform=auto` only falls back to
+  offscreen when no display is available.
+- `install-client-linux.sh` no longer dies at the first `/opt` write when run
+  without sudo (the wrapper ran unprivileged but defaulted to a root-only dir).
+- Removed stray empty `te` file from the repo root.
+- CI: install/PATH tests now portable across root-sandbox and non-root runners
+  (no `setpriv`); CI/GitHub-Actions no longer treated as a headless trigger.
 
 ## [1.3.0] - 2026-06-20
 
