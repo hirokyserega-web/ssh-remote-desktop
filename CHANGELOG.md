@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Nuitka-built ``rd-server`` failed at startup with
+  ``ImportError: attempted relative import with no known parent package``
+  because ``build_server_linux.sh`` pointed Nuitka at ``server/__main__.py``
+  directly (running it as ``__main__`` without a parent package). It now builds
+  via ``rd_server_entry.py``, which imports ``server.__main__:main`` normally so
+  the ``server`` package keeps its package context and relative imports resolve.
+
 ## [1.4.2] - 2026-06-20
 
 ### Fixed
