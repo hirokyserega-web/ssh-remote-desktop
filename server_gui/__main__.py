@@ -478,8 +478,122 @@ def build_parser() -> argparse.ArgumentParser:
                    help="disable the system tray")
     p.add_argument("--minimized", action="store_true",
                    help="start hidden in the tray (implies --tray)")
-    p.set_defaults(tray=True)
+    # Qt platform selection mirrors client/__main__.py: never force offscreen on
+    # a real desktop (that hid the window everywhere), but allow headless runs.
+    p.add_argument("--qt-platform", dest="qt_platform",
+                   choices=["auto", "xcb", "wayland", "offscreen"], default="auto",
+                   help="Qt QPA platform: auto (default), xcb, wayland, offscreen")
+    p.add_argument("--offscreen", dest="offscreen", action="store_true",
+                   help="force the offscreen Qt platform (headless; same as "
+                        "--qt-platform offscreen, also honours RD_HEADLESS=1 / CI)")
+    p.set_defaults(tray=True, offscreen=False)
     return p
+
+
+def _ensure_runtime_dir() -> None:
+    """Make sure XDG_RUNTIME_DIR is set (Qt needs it for wayland AND xcb).
+
+    Menu-launched processes sometimes miss it; recover from /run/user/<uid>.
+    Mirrors client/__main__._ensure_runtime_dir so the panel opens when launched
+    from an application menu instead of dying with no display.
+    """
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        return
+    if sys.platform != "linux":
+        return
+    try:
+        uid = os.getuid()
+    except AttributeError:
+        return
+    candidate = f"/run/user/{uid}"
+    if Path(candidate).is_dir():
+        os.environ["XDG_RUNTIME_DIR"] = candidate
+
+
+def _detect_wayland() -> bool:
+    """True when a Wayland compositor appears to be running (any signal wins).
+
+    Multiple independent signals because the env a .desktop launcher inherits is
+    unreliable on Wayland (Hyprland/Sway/river/non-systemd GNOME often omit
+    WAYLAND_DISPLAY for menu-launched apps).
+    """
+    if sys.platform != "linux":
+        return False
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+        return True
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and Path(runtime).is_dir():
+        try:
+            for entry in os.listdir(runtime):
+                if entry.startswith("wayland-") and "lock" not in entry:
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def _headless_requested(args) -> bool:
+    """True when offscreen is explicitly requested.
+
+    --offscreen / --qt-platform offscreen / RD_HEADLESS=1 / CI win over an
+    inherited QT_QPA_PLATFORM because the user asked for headless.
+    """
+    if getattr(args, "offscreen", False):
+        return True
+    if getattr(args, "qt_platform", None) == "offscreen":
+        return True
+    if os.environ.get("RD_HEADLESS", "").lower() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("CI", "").lower() in ("1", "true"):
+        return True
+    if os.environ.get("GITHUB_ACTIONS", "").lower() in ("1", "true"):
+        return True
+    return False
+
+
+def _setup_qt_platform(args) -> None:
+    """Set QT_QPA_PLATFORM honouring --qt-platform + env, mirroring the client.
+
+    Priority:
+      1. Explicit headless request (--offscreen / --qt-platform offscreen /
+         RD_HEADLESS=1 / CI) forces offscreen.
+      2. An already-exported QT_QPA_PLATFORM is respected untouched.
+      3. --qt-platform=auto (default): wayland;xcb under Wayland, xcb under X,
+         offscreen only when no display is available at all.
+      4. An explicit --qt-platform=wayland|xcb is honoured verbatim.
+
+    Never unconditionally defaults to offscreen — that hid the window on every
+    desktop where QT_QPA_PLATFORM was unset.
+    """
+    if _headless_requested(args):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        return
+    if sys.platform != "linux":
+        return
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return  # respect an explicit user choice
+    choice = (getattr(args, "qt_platform", None) or "auto").lower()
+    if choice == "offscreen":
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        return
+    if choice == "auto":
+        _ensure_runtime_dir()
+        if _detect_wayland():
+            # 'wayland;xcb' lets Qt fall back to XWayland if the wayland
+            # plugin is unavailable in the build.
+            os.environ["QT_QPA_PLATFORM"] = "wayland;xcb"
+        elif os.environ.get("DISPLAY"):
+            os.environ["QT_QPA_PLATFORM"] = "xcb"
+        else:
+            # No display signal at all — run headless so the panel still
+            # constructs (tests / CI can drive it) instead of crashing.
+            os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        return
+    # choice in ("wayland", "xcb")
+    _ensure_runtime_dir()
+    os.environ["QT_QPA_PLATFORM"] = choice
 
 
 def _default_config_path() -> str:
@@ -491,14 +605,12 @@ def main(argv=None) -> int:
     if args.minimized:
         args.tray = True
 
-    # Headless / offscreen friendly: only force the offscreen Qt platform
-    # when there is no display, so real desktops get a normal window (Qt
-    # auto-selects xcb/wayland). Unconditionally defaulting to offscreen
-    # hid the window on every desktop where QT_QPA_PLATFORM was unset.
-    if not os.environ.get("QT_QPA_PLATFORM"):
-        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-                or os.environ.get("XDG_SESSION_TYPE") in ("x11", "wayland")):
-            os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    # Qt platform selection mirrors client/__main__.py: respect an explicit
+    # QT_QPA_PLATFORM; for --qt-platform=auto pick wayland;xcb under Wayland,
+    # xcb under X, and offscreen only when no display is available or headless
+    # is explicitly requested (--offscreen / RD_HEADLESS=1 / CI). Never force
+    # offscreen unconditionally — that hid the window on every desktop.
+    _setup_qt_platform(args)
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("rd-server-gui")
