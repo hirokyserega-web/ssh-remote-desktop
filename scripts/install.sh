@@ -478,13 +478,163 @@ maybe_build() {
   fi
 }
 
+# ---- desktop entries, icons, PATH ------------------------------------------
+# Absolute install locations for launchers/icons. System-wide when running as
+# root (server install), user-local otherwise (client install).
+launcher_dirs() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    BINDIR="/usr/local/bin"
+    APPSDIR="/usr/share/applications"
+    ICONDIR="/usr/share/icons/hicolor/scalable/apps"
+  else
+    BINDIR="$HOME/.local/bin"
+    APPSDIR="$HOME/.local/share/applications"
+    ICONDIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+  fi
+  mkdir -p "$BINDIR" "$APPSDIR" "$ICONDIR"
+}
+
+# Resolve the absolute path of an installed component binary, preferring the
+# prebuilt binary in $TARGET_DIR/bin and falling back to the venv console
+# script. Empty if the component isn't installed.
+resolve_component_bin() {
+  local name="$1" target=""
+  if [[ -x "$TARGET_DIR/bin/$name" ]]; then
+    target="$TARGET_DIR/bin/$name"
+  elif [[ -x "$TARGET_DIR/.venv/bin/$name" ]]; then
+    target="$TARGET_DIR/.venv/bin/$name"
+  fi
+  echo "$target"
+}
+
+# Write a scalable SVG icon for a component. $1 = component (client|server-gui)
+# $2 = absolute output path. Keeps everything self-contained (no external icon
+# downloads) so the launcher shows a real icon even on minimal themes.
+write_icon_svg() {
+  local comp="$1" out="$2"
+  local svg
+  if [[ "$comp" == "client" ]]; then
+    # Monitor + blue SSH-arrow, signalling "remote screen".
+    svg='<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="6" y="10" width="52" height="38" rx="4" fill="#1f2937" stroke="#3b82f6" stroke-width="2"/>
+  <rect x="10" y="14" width="44" height="28" rx="2" fill="#0f172a"/>
+  <path d="M14 32l8-10 6 7 6-9 8 12" fill="none" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="22" y="50" width="20" height="4" rx="2" fill="#3b82f6"/>
+  <rect x="16" y="54" width="32" height="3" rx="1.5" fill="#1f2937"/>
+</svg>'
+  else
+    # Server rack + green status LED, signalling "managed server".
+    svg='<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="12" y="8" width="40" height="48" rx="4" fill="#1f2937" stroke="#10b981" stroke-width="2"/>
+  <rect x="16" y="14" width="32" height="10" rx="2" fill="#0f172a"/>
+  <rect x="16" y="28" width="32" height="10" rx="2" fill="#0f172a"/>
+  <rect x="16" y="42" width="32" height="10" rx="2" fill="#0f172a"/>
+  <circle cx="42" cy="19" r="2" fill="#34d399"/>
+  <circle cx="42" cy="33" r="2" fill="#34d399"/>
+  <circle cx="42" cy="47" r="2" fill="#34d399"/>
+  <rect x="20" y="16" width="16" height="2" rx="1" fill="#374151"/>
+  <rect x="20" y="30" width="16" height="2" rx="1" fill="#374151"/>
+  <rect x="20" y="44" width="16" height="2" rx="1" fill="#374151"/>
+</svg>'
+  fi
+  printf '%s' "$svg" > "$out"
+  chmod 0644 "$out"
+}
+
+# Create a .desktop launcher for a component. $1 = component (client|server-gui),
+# $2 = absolute binary path, $3 = display name, $4 = generic name, $5 = icon name.
+write_desktop_entry() {
+  local comp="$1" bin="$2" name="$3" generic="$4" icon="$5"
+  local file="$APPSDIR/ssh-remote-desktop-${comp}.desktop"
+  cat > "$file" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=${name}
+GenericName=${generic}
+Comment=SSH Remote Desktop
+Exec=${bin}
+Icon=${icon}
+Terminal=false
+Categories=Network;RemoteAccess;Qt;
+Keywords=ssh;remote;desktop;rdp;vnc;
+StartupWMClass=ssh-remote-desktop
+DESKTOP
+  chmod 0644 "$file"
+}
+
+# Build launchers + icons for every installed component. Client installs get a
+# client launcher; server installs get the server-gui launcher. Idempotent.
+install_desktop_entries() {
+  [[ "$OS" == "linux" ]] || return 0
+  launcher_dirs
+  local sel comps comp bin icon_name
+  sel="$(default_components)"
+  comps="$(expand_components "$sel")"
+  for comp in $comps; do
+    case "$comp" in
+      client)
+        bin="$(resolve_component_bin rd-client)"
+        [[ -z "$bin" ]] && continue
+        # Symlink into the launcher bindir so the .desktop path is stable and
+        # doesn't depend on $TARGET_DIR being on PATH.
+        ln -sf "$bin" "$BINDIR/rd-client" 2>/dev/null || true
+        icon_name="ssh-remote-desktop-client"
+        write_icon_svg client "$ICONDIR/${icon_name}.svg"
+        write_desktop_entry client "$BINDIR/rd-client" \
+          "SSH Remote Desktop — Client" "Remote Desktop Client" "$icon_name"
+        log "Created launcher: $APPSDIR/ssh-remote-desktop-client.desktop"
+        ;;
+      server)
+        bin="$(resolve_component_bin rd-server-gui)"
+        [[ -z "$bin" ]] && continue
+        ln -sf "$bin" "$BINDIR/rd-server-gui" 2>/dev/null || true
+        icon_name="ssh-remote-desktop-server-gui"
+        write_icon_svg server-gui "$ICONDIR/${icon_name}.svg"
+        write_desktop_entry server-gui "$BINDIR/rd-server-gui" \
+          "SSH Remote Desktop — Server Panel" "Server Management Panel" "$icon_name"
+        log "Created launcher: $APPSDIR/ssh-remote-desktop-server-gui.desktop"
+        ;;
+    esac
+  done
+  # Refresh the desktop database so the entries show up immediately in menus
+  # that honour it (GNOME, KDE, XFCE). Best-effort — ignore failures.
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APPSDIR" >/dev/null 2>&1 || true
+  fi
+}
+
+# Idempotently ensure $HOME/.local/bin is on PATH for interactive shells, so a
+# user can type `rd-client` in a fresh terminal without manual setup. Only
+# touches the user's own rc files (skipped when running as root).
+ensure_path() {
+  [[ "$OS" == "linux" ]] || return 0
+  [[ "${EUID:-$(id -u)}" -eq 0 ]] && return 0
+  local marker='# ssh-remote-desktop installer: local bin on PATH'
+  local line="export PATH=\"\$HOME/.local/bin:\$PATH\"  ${marker}"
+  local touched=0
+  for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+    [[ -f "$rc" ]] || continue
+    if ! grep -qF "$marker" "$rc" 2>/dev/null; then
+      printf '\n%s\n' "$line" >> "$rc"
+      touched=1
+    fi
+  done
+  if [[ "$touched" -eq 1 ]]; then
+    log "Added ~/.local/bin to PATH in ~/.bashrc / ~/.profile (takes effect in a new shell)."
+  fi
+}
+
 # ---- post-install wiring ---------------------------------------------------
 post_install() {
   mkdir -p "$HOME/.config/ssh-remote-desktop"
   if [[ -d "$HOME/.local/bin" ]] || mkdir -p "$HOME/.local/bin"; then
     # Prefer prebuilt binaries in $TARGET_DIR/bin; fall back to the venv's
-    # console scripts when installed from source.
-    for name in rd-server rd-client; do
+    # console scripts when installed from source. Include rd-server-gui so the
+    # server management panel is on PATH alongside the CLI tools.
+    for name in rd-server rd-client rd-server-gui; do
       local target=""
       if [[ -x "$TARGET_DIR/bin/$name" ]]; then
         target="$TARGET_DIR/bin/$name"
@@ -496,6 +646,10 @@ post_install() {
       fi
     done
   fi
+  # Application-menu launchers + icons, and ensure ~/.local/bin is on PATH for
+  # fresh shells so the user never needs to type a setup command.
+  install_desktop_entries
+  ensure_path
 }
 
 # ---- uninstall -------------------------------------------------------------
@@ -505,7 +659,7 @@ do_uninstall() {
   # 1. The install directory (prebuilt binaries, venv, sources).
   rm -rf "$TARGET_DIR"
   # 2. The PATH symlinks.
-  for name in rd-server rd-client; do
+  for name in rd-server rd-client rd-server-gui; do
     if [[ -L "$HOME/.local/bin/$name" || -e "$HOME/.local/bin/$name" ]]; then
       local link_target
       link_target=$(readlink -f "$HOME/.local/bin/$name" 2>/dev/null || true)
@@ -517,13 +671,34 @@ do_uninstall() {
       fi
     fi
   done
+  # 2b. System-wide symlinks (root install path).
+  for name in rd-server rd-client rd-server-gui; do
+    if [[ -L "/usr/local/bin/$name" ]]; then
+      local link_target
+      link_target=$(readlink -f "/usr/local/bin/$name" 2>/dev/null || true)
+      if [[ "$link_target" == "$TARGET_DIR"* ]] || [[ -z "$link_target" ]]; then
+        rm -f "/usr/local/bin/$name"
+      fi
+    fi
+  done
+  # 2c. Application-menu launchers + icons we created.
+  for dir in "$HOME/.local/share/applications" "/usr/share/applications"; do
+    rm -f "$dir/ssh-remote-desktop-client.desktop" \
+          "$dir/ssh-remote-desktop-server-gui.desktop" 2>/dev/null || true
+  done
+  for dir in "$HOME/.local/share/icons/hicolor/scalable/apps" "/usr/share/icons/hicolor/scalable/apps"; do
+    rm -f "$dir/ssh-remote-desktop-client.svg" \
+          "$dir/ssh-remote-desktop-server-gui.svg" 2>/dev/null || true
+  done
+  command -v update-desktop-database >/dev/null 2>&1 && \
+    update-desktop-database >/dev/null 2>&1 || true
   # 3. The config dir, but only if it is empty (never wipe user keys/hosts).
   local cfgdir="$HOME/.config/ssh-remote-desktop"
   if [[ -d "$cfgdir" ]] && [[ -z "$(find "$cfgdir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     rmdir "$cfgdir"
     log "Removed empty config dir $cfgdir"
   fi
-  log "Uninstall complete."
+  log "Uninstall complete. (PATH edits in ~/.bashrc / ~/.profile left in place — remove the 'ssh-remote-desktop installer' lines manually if desired.)"
   exit 0
 }
 
@@ -567,19 +742,21 @@ main() {
 print_next_steps() {
   cat <<NEXT
 
-Next steps:
+✅ Installation complete.
 
-  1. Add ~/.local/bin to PATH (or open a new shell):
-       export PATH="$HOME/.local/bin:$PATH"
+Launch from your application menu (no terminal needed):
+  • "SSH Remote Desktop — Client"      → connect to a remote machine
+  • "SSH Remote Desktop — Server Panel" → manage this machine's server
 
-  2. Generate a host key (auto-generated on first run, but you can pre-create it):
-       rd-server --config /etc/ssh-remote-desktop/server.toml
+The launchers appear in GNOME/KDE/XFCE menus under Network ▸ Remote Access.
+A new shell will also have ~/.local/bin on PATH automatically.
 
-  3. On the client, open the key manager (Help → SSH keys) and copy your
-     public key into the server's ~/.ssh/authorized_keys.
+First-time client connection (or just click the launcher and fill the dialog):
+  rd-client --host YOUR-SERVER --user YOUR-USER --key-path ~/.ssh/id_ed25519
 
-  4. Launch the client:
-       rd-client --host YOUR-SERVER --user YOUR-USER --key-path ~/.ssh/id_ed25519
+Server side: the panel creates the config and host key for you on first start,
+or pre-create them with:
+  rd-server --config /etc/ssh-remote-desktop/server.toml
 
 See $TARGET_DIR/README.md for the full guide.
 NEXT
