@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- _nothing yet_
+
+### Changed
+- _nothing yet_
+
+### Fixed
+- _nothing yet_
+
+## [1.3.0] - 2026-06-20
+
+### Added
 - Server daemon mode: `rd-server --daemon/--stop/--status` with double-fork,
   setsid, atomic pidfile, and stdio rebound to `--log-file` (or `/dev/null`).
   Refuses to start if a live pidfile already points at a running process.
