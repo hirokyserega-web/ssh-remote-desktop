@@ -62,7 +62,7 @@ class _Bridge(QObject):
     session = Signal(dict)
     clipboard = Signal(dict)
     state = Signal(str, str)
-    host_key = Signal(str, int, str, bool)
+    host_key = Signal(str, int, str, bool, str)
 
 
 class MainWindow(QMainWindow):
@@ -278,7 +278,7 @@ class MainWindow(QMainWindow):
         self.transport.on_session = lambda msg: self.bridge.session.emit(msg)
         self.transport.on_clipboard = lambda msg: self.bridge.clipboard.emit(msg)
         self.transport.on_state = lambda s, d: self.bridge.state.emit(s, d)
-        self.transport.on_host_key = lambda host, port, fp, changed: self.bridge.host_key.emit(host, port, fp, changed)
+        self.transport.on_host_key = lambda host, port, fp, changed, old_fp=None: self.bridge.host_key.emit(host, port, fp, changed, old_fp or "")
         self.transport.start()
         self._set_state("connecting")
 
@@ -424,8 +424,9 @@ class MainWindow(QMainWindow):
         # Re-translate dynamic labels.
         self._set_state(self._state)
 
-    def _on_host_key_gui(self, host, port, fingerprint, changed):
-        dialog = HostKeyDialog(host, port, fingerprint, changed, self)
+    def _on_host_key_gui(self, host, port, fingerprint, changed, old_fingerprint=""):
+        dialog = HostKeyDialog(host, port, fingerprint, changed, self,
+                               old_fingerprint=old_fingerprint or None)
         result = dialog.exec()
         if result == HostKeyDialog.Accepted:
             self.transport.confirm_host_key(True, dialog.remember())

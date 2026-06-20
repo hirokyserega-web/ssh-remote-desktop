@@ -39,7 +39,7 @@ from .hostkeys import (
 log = logging.getLogger("rd.client.transport")
 
 
-async def _noninteractive_ask(host: str, port: int, fingerprint: str, first_time: bool) -> tuple[bool, bool]:
+async def _noninteractive_ask(host: str, port: int, fingerprint: str, first_time: bool, old_fingerprint: str | None = None) -> tuple[bool, bool]:
     """Headless default TOFU policy used when no GUI callback is wired.
 
     Refuses unknown/changed keys so programmatic use never silently trusts a
@@ -69,7 +69,7 @@ class Transport:
         self.on_state: Callable[[str, str], None] = lambda state, detail: None
         # Host-key TOFU notification (fire-and-forget). The GUI shows a dialog
         # and resolves the pending question via :meth:`confirm_host_key`.
-        self.on_host_key: "Callable[[str, int, str, bool], None] | None" = None
+        self.on_host_key: "Callable[[str, int, str, bool, str | None], None] | None" = None
         # Known-hosts store; the GUI may override the path via cfg.known_hosts.
         self._hostkeys = KnownHostsStore(self.cfg.known_hosts)
         # TOFU ask bridge: when validate_host_public_key awaits, we emit the
@@ -260,7 +260,7 @@ class Transport:
                 opts["passphrase"] = self._password
         return opts
 
-    async def _ask_host_key(self, host: str, port: int, fingerprint: str, first_time: bool) -> tuple[bool, bool]:
+    async def _ask_host_key(self, host: str, port: int, fingerprint: str, first_time: bool, old_fingerprint: str | None = None) -> tuple[bool, bool]:
         """Notify the GUI and block on the asyncio loop until it answers.
 
         The GUI's on_host_key callback is fire-and-forget (it emits a Qt signal
@@ -269,7 +269,7 @@ class Transport:
         Returns ``(accepted, remember)``.
         """
         self._tofu_event = asyncio.Event()
-        self.on_host_key(host, port, fingerprint, first_time)
+        self.on_host_key(host, port, fingerprint, first_time, old_fingerprint)
         await self._tofu_event.wait()
         return self._tofu_result, self._tofu_remember
 

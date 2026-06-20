@@ -177,7 +177,7 @@ def _key_blob_b64(key) -> str:
 # unchecks "remember" gets a one-time trust (the key is validated this session
 # but not saved). For backward compatibility a plain bool return is treated as
 # ``(bool, True)``.
-AskFn = "Callable[[str, int, str, bool], Awaitable[tuple[bool, bool] | bool]]"
+AskFn = "Callable[[str, int, str, bool, str | None], Awaitable[tuple[bool, bool] | bool]]"
 ConfirmFn = AskFn
 
 
@@ -208,13 +208,15 @@ class TofuClient(asyncssh.SSHClient):
         info = conn.get_extra_info("peername") or ("", 0)
         self._host, self._port = (info[0], info[1]) if info else ("", 22)
 
-    async def _ask_tuple(self, host: str, port: int, fp: str, first_time: bool) -> tuple[bool, bool]:
+    async def _ask_tuple(self, host: str, port: int, fp: str, first_time: bool,
+                         old_fingerprint: str | None = None) -> tuple[bool, bool]:
         """Call ``ask`` and normalize its return to ``(accepted, remember)``.
 
         Tolerates a plain ``bool`` return (treated as ``(bool, True)``) so older
-        callers keep working.
+        callers keep working. ``old_fingerprint`` is forwarded so the GUI can
+        show a side-by-side comparison when the key has changed.
         """
-        res = await self._ask(host, port, fp, first_time)
+        res = await self._ask(host, port, fp, first_time, old_fingerprint)
         if isinstance(res, tuple):
             accepted, remember = res
             return bool(accepted), bool(remember)
@@ -259,7 +261,7 @@ class TofuClient(asyncssh.SSHClient):
         # GUI can show a sterner warning. If the user accepts, overwrite the
         # stored entry only when they chose to remember the new key.
         try:
-            accepted, remember = await self._ask_tuple(host, port, fp, False)
+            accepted, remember = await self._ask_tuple(host, port, fp, False, known.fingerprint)
         except Exception as exc:
             log.warning("host-key ask callback raised: %s", exc)
             accepted, remember = False, False
