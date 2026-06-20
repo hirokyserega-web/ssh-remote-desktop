@@ -15,6 +15,20 @@ from PySide6.QtWidgets import (
 from PySide6.QtWidgets import QMessageBox
 
 
+# Common resolution presets (WxH). Ordered low->high.
+RESOLUTION_PRESETS = [
+    (1280, 720),
+    (1600, 900),
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+]
+
+
+def _format_preset(w: int, h: int) -> str:
+    return f"{w}x{h}"
+
+
 class ConnectDialog(QDialog):
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
@@ -68,9 +82,18 @@ class ConnectDialog(QDialog):
         self.codec.setCurrentText(cfg.codec)
         form.addRow(self.tr("Кодек:"), self.codec)
 
-        self.geometry = QLineEdit(f"{cfg.geometry[0]}x{cfg.geometry[1]}")
+        self.geometry = QComboBox()
+        self.geometry.setEditable(True)
+        self.geometry.setInsertPolicy(QComboBox.NoInsert)
+        cur_geom = f"{cfg.geometry[0]}x{cfg.geometry[1]}"
+        for w, h in RESOLUTION_PRESETS:
+            self.geometry.addItem(f"{w}x{h}")
+        # Ensure the current config value is present (custom resolutions allowed).
+        if cur_geom not in [self.geometry.itemText(i) for i in range(self.geometry.count())]:
+            self.geometry.addItem(cur_geom)
+        self.geometry.setCurrentText(cur_geom)
         form.addRow(self.tr("Разрешение сессии:"), self.geometry)
-        self.geometry.textEdited.connect(self._validate_geometry)
+        self.geometry.lineEdit().textEdited.connect(self._validate_geometry)
 
         self.persistent = QCheckBox(self.tr("Сохранять сессию для переподключения"))
         self.persistent.setChecked(cfg.persistent)
@@ -92,7 +115,7 @@ class ConnectDialog(QDialog):
         # Auto-focus the host field so the user can start typing right away.
         self.host.setFocus()
         # Validate the geometry field live and colour the row red on a bad value.
-        self.geometry.editingFinished.connect(self._validate_geometry)
+        self.geometry.lineEdit().editingFinished.connect(self._validate_geometry)
 
     def _auth_changed(self, method: str):
         is_key = method == "key"
@@ -111,9 +134,14 @@ class ConnectDialog(QDialog):
         if path:
             self.key_path.setText(path)
 
-    def _validate_geometry(self):
-        """Highlight the geometry field red if it isn't a valid WxH string."""
-        txt = self.geometry.text().strip().lower()
+    def _validate_geometry(self, text: str | None = None) -> bool:
+        """Validate the geometry field. Returns True when it is a valid WxH.
+
+        When called with no argument (e.g. from editingFinished) it reads the
+        current field text; when called with ``text`` (e.g. from textEdited) it
+        validates that value. Invalid values highlight the field red.
+        """
+        txt = (text if text is not None else self.geometry.currentText()).strip().lower()
         ok = False
         try:
             w, h = txt.split("x")
@@ -121,7 +149,8 @@ class ConnectDialog(QDialog):
             ok = 16 <= w <= 7680 and 16 <= h <= 4320
         except Exception:
             ok = False
-        self.geometry.setStyleSheet("" if ok else "border: 1px solid #d23b3b;")
+        self.geometry.lineEdit().setStyleSheet("" if ok else "border: 1px solid #d23b3b;")
+        return ok
 
     def _recent_hosts_path(self) -> Path:
         d = Path(os.path.expanduser("~/.config/ssh-remote-desktop"))
@@ -162,7 +191,7 @@ class ConnectDialog(QDialog):
         self.cfg.persistent = self.persistent.isChecked()
         self.cfg.start_fullscreen = self.fullscreen.isChecked()
         try:
-            w, h = self.geometry.text().lower().split("x")
+            w, h = self.geometry.currentText().lower().split("x")
             self.cfg.geometry = (int(w), int(h))
         except Exception:
             pass
@@ -178,8 +207,8 @@ class ConnectDialog(QDialog):
         if not user:
             QMessageBox.warning(self, self.tr("Подключение"), self.tr("Укажите пользователя."))
             return
-        if not self._validate_geometry(self.geometry.text()):
-            QMessageBox.warning(self, self.tr("Подключение"), self.tr("Разрешение должно быть вида WxH (например 1920x1080), не меньше 320x240."))
+        if not self._validate_geometry():
+            QMessageBox.warning(self, self.tr("Подключение"), self.tr("Разрешение должно быть вида WxH (например 1920x1080), от 16x16 до 7680x4320."))
             return
         self.apply_to_config()
         self._save_recent_host(host)

@@ -40,7 +40,7 @@ jobs:
           # macOS: client only, optional (does not block the release)
           - os: macos-latest
             label: macos
-            build: build_client_linux.sh
+            build: build_client_macos.sh
             components: client
             optional: true
     steps:
@@ -128,13 +128,15 @@ jobs:
           done
           printf '%s' "$sha_lines" > "$SHA_FILE"
           printf '%s' "$sha_lines" >> staging/SHA256SUMS
-          files_list="$(find staging -type f -printf '%f\n' | sort)"
-          {
-            echo "files<<EOF"
-            printf '%s\n' "$files_list"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          if [[ -z "$files_list" ]]; then
+          # Count staged archives (portable: no GNU find -printf).
+          archive_count=0
+          for archive in staging/*.tar.gz staging/*.zip; do
+            if [[ -f "$archive" ]]; then
+              archive_count=$((archive_count + 1))
+            fi
+          done
+          echo "archive_count=$archive_count" >> "$GITHUB_OUTPUT"
+          if [[ "$archive_count" -eq 0 ]]; then
             echo "::warning::No binaries were produced for ${OS_LABEL}; skipping artifact upload."
           fi
 
@@ -149,7 +151,10 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    if: always() && !cancelled()
+    # Only publish when the build job actually succeeded (not merely ran).
+    # `always() && !cancelled()` would publish an empty release if every
+    # build job failed, so gate on build success + a real Linux asset.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -175,6 +180,18 @@ jobs:
           pattern: binaries-*
           merge-multiple: true
           path: release-assets
+
+      - name: Verify a Linux asset exists before publishing
+        run: |
+          set -euo pipefail
+          # The Linux build is the only required artifact. Refuse to publish a
+          # release that has no Linux client/server archive — otherwise a fully
+          # broken build pipeline would still create an empty GitHub release.
+          if ! ls release-assets/ssh-remote-desktop-*-linux-*.tar.gz >/dev/null 2>&1; then
+            echo "::error::No Linux release asset found; aborting publish to avoid an empty release."
+            exit 1
+          fi
+          echo "Linux asset present, proceeding to publish."
 
       - name: Merge SHA256SUMS
         run: |

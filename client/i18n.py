@@ -92,6 +92,9 @@ _EN: dict[str, str] = {
     "Сохранено": "Saved",
     "Нет ключа": "No key",
     "Сначала сгенерируйте ключ.": "Generate a key first.",
+    "comment@host (необязательно)": "comment@host (optional)",
+    "необязательно": "optional",
+    "Папка для ключей": "Key folder",
     "Обзор…": "Browse…",
     # Preferences
     "Предпочтения": "Preferences",
@@ -108,6 +111,16 @@ _EN: dict[str, str] = {
     "Применить": "Apply",
     "ОК": "OK",
     "Отмена": "Cancel",
+    'Разрешение должно быть вида WxH (например 1920x1080), от 16x16 до 7680x4320.': 'Resolution must be WxH (e.g. 1920x1080), from 16x16 up to 7680x4320.',
+    'Сортировка:': 'Sort:',
+    'имя': 'name',
+    'размер': 'size',
+    'дата': 'date',
+    'Копировать отпечаток': 'Copy fingerprint',
+    '— сгенерируйте ключ, чтобы увидеть отпечаток —': '— generate a key to see its fingerprint —',
+    'Ошибка': 'Error',
+    'Не удалось сгенерировать ключ:\\n{exc}': 'Could not generate key:\\n{exc}',
+    'Не удалось сохранить:\\n{exc}': 'Could not save:\\n{exc}',
 }
 
 TRANSLATIONS: dict[str, dict[str, str]] = {"en": _EN}

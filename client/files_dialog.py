@@ -11,11 +11,26 @@ import os
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QListWidgetItem,
-    QLabel, QProgressBar, QFileDialog, QMessageBox, QLineEdit,
+    QLabel, QProgressBar, QFileDialog, QMessageBox, QComboBox,
 )
 from PySide6.QtCore import Qt, Signal, QObject
 
 from .files import FileTransfer
+
+
+def _human_size(n: int) -> str:
+    """Format a byte count as a short human-readable string (KiB/MiB/...)."""
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    f = float(n)
+    for u in units:
+        if f < 1024 or u == units[-1]:
+            return f"{int(f)} {u}" if u == "B" else f"{f:.1f} {u}"
+        f /= 1024
+    return f"{n} B"
+
+
+# Sort modes for the listing. Dirs always sort above files within each mode.
+_SORT_MODES = ["name", "size", "mtime"]
 
 
 class _ProgressBridge(QObject):
@@ -33,6 +48,7 @@ class FilesDialog(QDialog):
         self.setWindowTitle(self.tr("Файловый менеджер — общая папка"))
         self.resize(560, 480)
         self._cwd = ""
+        self._last_entries: list[dict] = []
         self._transfer = FileTransfer(transport)
         self._bridge = _ProgressBridge()
         self._bridge.progress.connect(self._on_progress)
@@ -43,17 +59,28 @@ class FilesDialog(QDialog):
         root = QVBoxLayout(self)
 
         nav = QHBoxLayout()
-        self.path_label = QLineEdit("/")
-        self.path_label.setReadOnly(True)
         up = QPushButton(self.tr("Вверх"))
         up.clicked.connect(self._go_up)
         refresh = QPushButton(self.tr("Обновить"))
         refresh.clicked.connect(self._refresh)
         nav.addWidget(QLabel(self.tr("Путь:")))
-        nav.addWidget(self.path_label, 1)
+        # Breadcrumb container: one clickable button per path segment + root.
+        self.crumbs = QHBoxLayout()
+        self.crumbs.setSpacing(2)
+        nav.addLayout(self.crumbs, 1)
         nav.addWidget(up)
         nav.addWidget(refresh)
         root.addLayout(nav)
+
+        # Sort control: name / size / mtime.
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel(self.tr("Сортировка:")))
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems([self.tr("имя"), self.tr("размер"), self.tr("дата")])
+        self.sort_combo.currentIndexChanged.connect(lambda _i: self._populate(self._last_entries))
+        sort_row.addWidget(self.sort_combo)
+        sort_row.addStretch(1)
+        root.addLayout(sort_row)
 
         self.listing = QListWidget()
         self.listing.itemDoubleClicked.connect(self._open_item)
@@ -115,15 +142,61 @@ class FilesDialog(QDialog):
         QMessageBox.warning(self, self.tr("Файлы"), msg)
 
     def _populate(self, entries: list[dict]):
+        self._last_entries = entries or []
         self.listing.clear()
-        self.path_label.setText("/" + self._cwd)
-        for ent in entries:
+        self._render_crumbs()
+        mode = self.sort_combo.currentIndex() if hasattr(self, "sort_combo") else 0
+        for ent in self._sorted_entries(self._last_entries, mode):
             label = ("📁 " if ent["is_dir"] else "📄 ") + ent["name"]
             if not ent["is_dir"]:
-                label += f"   ({ent['size']} B)"
+                label += f"   ({_human_size(int(ent.get('size', 0)))})"
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, ent)
             self.listing.addItem(item)
+
+    @staticmethod
+    def _sorted_entries(entries: list[dict], mode: int) -> list[dict]:
+        """Sort entries: directories first, then by the selected mode."""
+        key = {0: lambda e: e.get("name", "").lower(),
+               1: lambda e: -int(e.get("size", 0)),
+               2: lambda e: -int(e.get("mtime", 0))}.get(mode, lambda e: e.get("name", ""))
+        return sorted(entries, key=lambda e: (not e.get("is_dir", False), key(e)))
+
+    def _render_crumbs(self):
+        """Rebuild the clickable breadcrumb buttons from self._cwd."""
+        # Clear previous crumbs.
+        while self.crumbs.count():
+            it = self.crumbs.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        root_btn = QPushButton("/")
+        root_btn.setFlat(True)
+        root_btn.clicked.connect(lambda: self._cd(""))
+        self.crumbs.addWidget(root_btn)
+        if not self._cwd:
+            return
+        acc = ""
+        parts = [p for p in self._cwd.split("/") if p]
+        for i, part in enumerate(parts):
+            acc = f"{acc}/{part}".lstrip("/")
+            sep = QLabel("›")
+            sep.setStyleSheet("color: gray;")
+            self.crumbs.addWidget(sep)
+            btn = QPushButton(part)
+            btn.setFlat(True)
+            # Capture the accumulated path for this segment.
+            target = acc
+            btn.clicked.connect(lambda _=False, t=target: self._cd(t))
+            # Last segment is the current dir; highlight it.
+            if i == len(parts) - 1:
+                btn.setStyleSheet("font-weight: bold;")
+            self.crumbs.addWidget(btn)
+        self.crumbs.addStretch(1)
+
+    def _cd(self, path: str):
+        self._cwd = path
+        self._refresh()
 
     # -- transfers ---------------------------------------------------------
     def _remote_path(self, name: str) -> str:

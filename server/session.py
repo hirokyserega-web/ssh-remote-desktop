@@ -41,8 +41,20 @@ log = logging.getLogger("rd.session")
 # ---------------------------------------------------------------------------
 # User / privilege helpers
 # ---------------------------------------------------------------------------
+# Re-exported by :mod:`server.auth` as :data:`SERVER_IS_LINUX_ONLY`; kept
+# locally so :class:`UserInfo` can fail-fast without a cross-module import
+# at construction time. Same RuntimeError shape as in auth.py.
+_SERVER_IS_LINUX_ONLY = RuntimeError("server-side user lookup requires POSIX pwd (Linux-only)")
+
+
 class UserInfo:
     def __init__(self, name: str):
+        if pwd is None:
+            # Non-POSIX host (Windows / headless test runner): the session
+            # machinery is Linux-only (needs real UIDs, X display sockets,
+            # process demotion). Refuse explicitly instead of crashing on
+            # ``None.getpwnam``.
+            raise _SERVER_IS_LINUX_ONLY
         rec = pwd.getpwnam(name)
         self.name = rec.pw_name
         self.uid = rec.pw_uid
@@ -74,7 +86,8 @@ def _demote(uid: int, gid: int):
     def preexec():  # pragma: no cover - runs in the child
         try:
             os.setgid(gid)
-            os.initgroups(pwd.getpwuid(uid).pw_name, gid)
+            if pwd is not None:
+                os.initgroups(pwd.getpwuid(uid).pw_name, gid)
             os.setuid(uid)
         except PermissionError:
             pass

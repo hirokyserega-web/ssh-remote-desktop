@@ -8,3 +8,7 @@ build/
 dist/
 *.spec
 nightly/
+
+# Stray single-char test artifacts (e.g. accidental `touch t`, `touch tests/test`).
+/t
+/tests/test

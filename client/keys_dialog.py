@@ -92,14 +92,18 @@ class KeyManagerDialog(QDialog):
         self.fp_view = QLineEdit()
         self.fp_view.setReadOnly(True)
         self.fp_view.setStyleSheet("font-family: monospace;")
+        self.fp_view.setPlaceholderText(self.tr("— сгенерируйте ключ, чтобы увидеть отпечаток —"))
         root.addWidget(self.fp_view)
 
         copy_row = QHBoxLayout()
         copy_pub = QPushButton(self.tr("Копировать публичный ключ"))
         copy_pub.clicked.connect(self._copy_pub)
+        copy_fp = QPushButton(self.tr("Копировать отпечаток"))
+        copy_fp.clicked.connect(self._copy_fp)
         copy_cmd = QPushButton(self.tr("Копировать команду установки"))
         copy_cmd.clicked.connect(self._copy_install_cmd)
         copy_row.addWidget(copy_pub)
+        copy_row.addWidget(copy_fp)
         copy_row.addWidget(copy_cmd)
         root.addLayout(copy_row)
 
@@ -165,6 +169,11 @@ class KeyManagerDialog(QDialog):
     def _copy_pub(self):
         if self._keypair:
             QGuiApplication.clipboard().setText(self._keypair.public_openssh)
+
+    def _copy_fp(self):
+        fp = self.fp_view.text()
+        if fp:
+            QGuiApplication.clipboard().setText(fp)
 
     def _copy_install_cmd(self):
         QGuiApplication.clipboard().setText(self.cmd_view.toPlainText())

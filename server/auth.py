@@ -21,6 +21,25 @@ except ImportError:  # Windows: server is Linux-only; guard for test collection.
 
 log = logging.getLogger("rd.auth")
 
+# Sentinel: when ``pwd`` is None (Windows / a non-POSIX test runner) the
+# server-side user/authorized_keys helpers cannot work -- the server is
+# Linux-only by design. Rather than crashing with ``AttributeError:
+# 'NoneType' object has no attribute 'getpwnam'`` we fail with a clear,
+# typed error the caller (broker / tests) can branch on. The helpers below
+# all funnel through :func:`_require_pwd` so the contract is uniform.
+SERVER_IS_LINUX_ONLY = RuntimeError("server-side user lookup requires POSIX pwd (Linux-only)")
+
+
+def _require_pwd():
+    """Raise :data:`SERVER_IS_LINUX_ONLY` when the ``pwd`` module is absent.
+
+    On a real Linux server ``pwd`` is always importable; on Windows / a
+    headless test runner it is not, and the user/authorized_keys helpers
+    must refuse explicitly instead of dereferencing ``None``.
+    """
+    if pwd is None:
+        raise SERVER_IS_LINUX_ONLY
+
 try:
     import pam as _pam  # python-pam
 
@@ -31,6 +50,15 @@ except Exception:  # pragma: no cover
 
 
 def user_exists(username: str) -> bool:
+    """Return True if ``username`` is a real local POSIX account.
+
+    On non-POSIX hosts (``pwd`` unavailable) this raises
+    :data:`SERVER_IS_LINUX_ONLY` rather than returning a misleading
+    ``False``: the server cannot authorise anyone without the user DB, so
+    callers should treat the platform as unsupported, not the user as
+    absent. The broker maps this to an auth refusal.
+    """
+    _require_pwd()
     try:
         pwd.getpwnam(username)
         return True
@@ -40,7 +68,12 @@ def user_exists(username: str) -> bool:
 
 def check_password(username: str, password: str, service: str = "login") -> bool:
     """Return True if ``password`` is valid for ``username`` via PAM."""
-    if not user_exists(username):
+    try:
+        if not user_exists(username):
+            return False
+    except RuntimeError as exc:
+        # Non-POSIX host: server is Linux-only; refuse password auth.
+        log.error("password auth unavailable on non-POSIX host: %s", exc)
         return False
     if _HAVE_PAM:
         try:
@@ -58,6 +91,7 @@ def check_password(username: str, password: str, service: str = "login") -> bool
 
 def authorized_keys_for(username: str) -> list[str]:
     """Return the raw OpenSSH public-key lines from the user's authorized_keys."""
+    _require_pwd()
     try:
         rec = pwd.getpwnam(username)
     except KeyError:
