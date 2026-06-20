@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.6] - 2026-06-20
+
 ### Fixed
 - `rd-client` (and `rd-server`) crashed on launch with
   `tomllib.TOMLDecodeError: Invalid statement (at line 1, column 1)` when the
