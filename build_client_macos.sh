@@ -3,6 +3,10 @@
 # Run on a macOS GitHub Actions runner (or a macOS host with bash + python).
 # Output: dist/rd-client
 #
+# Builds via rd_client_entry.py (not client/__main__.py) so the ``client``
+# package keeps its package context and the lazy relative imports inside
+# client/__main__.py:main() resolve. See build_client_linux.sh for details.
+#
 # macOS notes:
 #   * Nuitka standalone on macOS needs a local C compiler (clang from Xcode/
 #     Command Line Tools) and the onefile bootloaders; --assume-yes-for-downloads
@@ -20,4 +24,4 @@ python -m nuitka \
   --enable-plugin=pyside6 \
   --output-dir=dist \
   --output-filename=rd-client \
-  client/__main__.py
+  rd_client_entry.py
