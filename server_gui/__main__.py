@@ -535,20 +535,20 @@ def _detect_wayland() -> bool:
 
 
 def _headless_requested(args) -> bool:
-    """True when offscreen is explicitly requested.
+    """True when the user *explicitly* asked for headless (offscreen) output.
 
-    --offscreen / --qt-platform offscreen / RD_HEADLESS=1 / CI win over an
-    inherited QT_QPA_PLATFORM because the user asked for headless.
+    Only intentional signals count: ``--offscreen``, ``--qt-platform offscreen``,
+    or ``RD_HEADLESS=1``. ``CI`` / ``GITHUB_ACTIONS`` are deliberately NOT
+    treated as headless here: the auto path already falls back to offscreen when
+    no display is present, and forcing offscreen under CI would (a) clobber an
+    explicit ``QT_QPA_PLATFORM`` the user set, and (b) hide the window on a real
+    (xvfb) display — the exact regression this module fixes.
     """
     if getattr(args, "offscreen", False):
         return True
     if getattr(args, "qt_platform", None) == "offscreen":
         return True
     if os.environ.get("RD_HEADLESS", "").lower() in ("1", "true", "yes"):
-        return True
-    if os.environ.get("CI", "").lower() in ("1", "true"):
-        return True
-    if os.environ.get("GITHUB_ACTIONS", "").lower() in ("1", "true"):
         return True
     return False
 
@@ -557,23 +557,26 @@ def _setup_qt_platform(args) -> None:
     """Set QT_QPA_PLATFORM honouring --qt-platform + env, mirroring the client.
 
     Priority:
-      1. Explicit headless request (--offscreen / --qt-platform offscreen /
-         RD_HEADLESS=1 / CI) forces offscreen.
-      2. An already-exported QT_QPA_PLATFORM is respected untouched.
-      3. --qt-platform=auto (default): wayland;xcb under Wayland, xcb under X,
-         offscreen only when no display is available at all.
-      4. An explicit --qt-platform=wayland|xcb is honoured verbatim.
+      1. non-Linux: nothing to do (Qt picks its own default platform).
+      2. An already-exported ``QT_QPA_PLATFORM`` is sacred — respected untouched
+         and never clobbered by ``--offscreen`` / ``RD_HEADLESS``.
+      3. Explicit headless request (``--offscreen`` / ``--qt-platform offscreen``
+         / ``RD_HEADLESS=1``) -> offscreen.
+      4. ``--qt-platform=wayland|xcb`` -> that platform verbatim.
+      5. ``--qt-platform=auto`` (default): ``wayland;xcb`` under Wayland, ``xcb``
+         under X, ``offscreen`` only when no display is available at all.
 
-    Never unconditionally defaults to offscreen — that hid the window on every
-    desktop where QT_QPA_PLATFORM was unset.
+    Never forces offscreen when a display is available and the user hasn't
+    explicitly asked for headless — unconditionally defaulting to offscreen hid
+    the window on every desktop where ``QT_QPA_PLATFORM`` was unset.
     """
-    if _headless_requested(args):
-        os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        return
     if sys.platform != "linux":
         return
     if os.environ.get("QT_QPA_PLATFORM"):
-        return  # respect an explicit user choice
+        return  # sacred: respect an explicit user choice, even over --offscreen
+    if _headless_requested(args):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        return
     choice = (getattr(args, "qt_platform", None) or "auto").lower()
     if choice == "offscreen":
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -588,7 +591,7 @@ def _setup_qt_platform(args) -> None:
             os.environ["QT_QPA_PLATFORM"] = "xcb"
         else:
             # No display signal at all — run headless so the panel still
-            # constructs (tests / CI can drive it) instead of crashing.
+            # constructs (tests / a headless server) instead of crashing.
             os.environ["QT_QPA_PLATFORM"] = "offscreen"
         return
     # choice in ("wayland", "xcb")
@@ -605,11 +608,11 @@ def main(argv=None) -> int:
     if args.minimized:
         args.tray = True
 
-    # Qt platform selection mirrors client/__main__.py: respect an explicit
-    # QT_QPA_PLATFORM; for --qt-platform=auto pick wayland;xcb under Wayland,
-    # xcb under X, and offscreen only when no display is available or headless
-    # is explicitly requested (--offscreen / RD_HEADLESS=1 / CI). Never force
-    # offscreen unconditionally — that hid the window on every desktop.
+    # Qt platform selection mirrors client/__main__.py: an explicit
+    # QT_QPA_PLATFORM is sacred; --qt-platform=auto picks wayland;xcb under
+    # Wayland, xcb under X, and offscreen only when no display is available or
+    # headless is explicitly requested (--offscreen / RD_HEADLESS=1). CI is NOT
+    # treated as headless — never force offscreen on a real (xvfb) display.
     _setup_qt_platform(args)
 
     app = QApplication.instance() or QApplication(sys.argv)

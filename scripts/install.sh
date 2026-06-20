@@ -710,9 +710,14 @@ install_desktop_entries() {
 # appends the right line to the rc matching $SHELL (bash / zsh / fish) once
 # (marker-guarded — never duplicated on re-runs) and prints the exact line to
 # run for the current session.
+# True when running as root (EUID 0). Extracted so tests can override it without
+# dropping privileges (setpriv fails under non-root CI runners, and EUID is
+# readonly in bash).
+srd_is_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
+
 ensure_path() {
   [[ "$OS" == "linux" ]] || return 0
-  [[ "${EUID:-$(id -u)}" -eq 0 ]] && return 0
+  srd_is_root && return 0
   local bindir="$HOME/.local/bin"
   # Already on PATH in this session — nothing to do.
   case ":${PATH:-}:" in

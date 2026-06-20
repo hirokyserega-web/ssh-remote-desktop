@@ -4,7 +4,8 @@ Mirrors the client-side coverage in ``test_install_launcher.py``: the GUI must
 NOT unconditionally force the offscreen Qt platform (that hid the window on
 every desktop), must respect an explicit ``QT_QPA_PLATFORM``, and must only go
 headless when explicitly asked (``--offscreen`` / ``--qt-platform offscreen`` /
-``RD_HEADLESS=1`` / CI) or when no display is available at all.
+``RD_HEADLESS=1``) or when no display is available at all. CI is explicitly NOT
+a headless trigger.
 """
 from __future__ import annotations
 
@@ -163,15 +164,23 @@ def test_rd_headless_forces_offscreen_with_display(monkeypatch):
     assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
 
 
-def test_ci_env_forces_offscreen_with_display(monkeypatch):
+def test_ci_does_not_force_offscreen_with_display(monkeypatch):
+    """CI=true must NOT force offscreen when a display is available.
+
+    Treating CI as headless was the regression: it hid the window under
+    xvfb-run (which provides DISPLAY) and clobbered an explicit
+    QT_QPA_PLATFORM. Only an explicit headless request does that.
+    """
     m = _load_main()
     _clear_display_env(monkeypatch)
     for k in ("CI", "GITHUB_ACTIONS", "RD_HEADLESS"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     m._setup_qt_platform(_Args())
-    assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
+    assert os.environ["QT_QPA_PLATFORM"] != "offscreen"
+    assert os.environ["QT_QPA_PLATFORM"] == "xcb"
 
 
 def test_explicit_env_beats_headless_flag(monkeypatch):
@@ -184,11 +193,11 @@ def test_explicit_env_beats_headless_flag(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "xcb")
     monkeypatch.setenv("DISPLAY", ":0")
     m._setup_qt_platform(_Args(offscreen=True))
-    # _headless_requested short-circuits to offscreen before the env check, so
-    # the explicit env is overridden by an explicit headless request — this is
-    # intended (the user asked for headless). Assert the documented behaviour:
-    # an explicit headless request wins.
-    assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
+    # Explicit env is the strongest signal (mirrors the client): an exported
+    # QT_QPA_PLATFORM is sacred and is NOT clobbered by --offscreen. The user
+    # expressed a platform choice via the environment; --offscreen only fills in
+    # when no such choice exists.
+    assert os.environ["QT_QPA_PLATFORM"] == "xcb"
 
 
 # --------------------------------------------------------------------------- #

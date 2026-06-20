@@ -32,10 +32,12 @@ def _run_ensure_path(home: str, shell: str, os_name: str = "linux",
                      extra_env: dict | None = None) -> subprocess.CompletedProcess:
     """Source install.sh (guarded so main() doesn't run), then call ensure_path.
 
-    Uses SRD_NO_RUN_MAIN=1 + a synthetic environment so the function can be
-    exercised in isolation without performing a real install. The sandbox runs
-    as root but EUID is readonly in bash and ensure_path skips when EUID==0,
-    so non-root cases drop privileges via setpriv; the root case keeps them.
+    Uses SRD_NO_RUN_MAIN=1 + a synthetic HOME/SHELL/PATH so the function runs
+    in isolation without performing a real install. The root/non-root branch
+    of ensure_path is controlled by overriding the ``srd_is_root`` seam inside
+    the snippet — this is environment-independent (works identically under the
+    root sandbox and a non-root GitHub runner), unlike ``setpriv`` which fails
+    with EPERM when the runner is already non-root.
     """
     env = dict(os.environ)
     env["SRD_NO_RUN_MAIN"] = "1"
@@ -44,33 +46,22 @@ def _run_ensure_path(home: str, shell: str, os_name: str = "linux",
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin"  # deliberately lacks ~/.local/bin
     if extra_env:
         env.update(extra_env)
-    # Bash snippet: source install.sh, set OS for the function, run it. OS is a
-    # plain variable (not readonly) so we can override it after sourcing.
+    # `root` selects which way the seam is overridden: true => pretend root
+    # (ensure_path must skip); false => pretend non-root (ensure_path must run).
+    root_seam = "srd_is_root() { return 0; }" if root else "srd_is_root() { return 1; }"
     snippet = textwrap.dedent(f"""\
         set -euo pipefail
         export HOME={home!r}
         export SHELL={shell!r}
-        export PATH=$PATH
+        export PATH={env['PATH']!r}
         source {INSTALL!r}
         OS={os_name!r}
+        {root_seam}
         ensure_path
         echo "SRD_ENSURE_PATH_DONE rc=$?"
     """)
-    if root:
-        cmd = ["bash", "-c", snippet]
-    else:
-        # Make the synthetic HOME writable by uid 1000 (pytest creates tmp_path
-        # under root) and every ancestor up to /tmp traversable, so the
-        # dropped-privilege bash can mkdir ~/.config/fish etc.
-        subprocess.run(["chmod", "-R", "777", home], check=False)
-        _ancestor = os.path.dirname(home.rstrip("/"))
-        while _ancestor and os.path.abspath(_ancestor) not in ("/", "/tmp"):
-            subprocess.run(["chmod", "o+rx", _ancestor], check=False)
-            _ancestor = os.path.dirname(_ancestor)
-        cmd = ["setpriv", "--reuid", "1000", "--regid", "1000", "--clear-groups",
-               "bash", "-c", snippet]
     return subprocess.run(
-        cmd, capture_output=True, text=True, env=env,
+        ["bash", "-c", snippet], capture_output=True, text=True, env=env,
     )
 
 
