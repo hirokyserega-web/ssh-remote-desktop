@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `rd-client` (and `rd-server`) crashed on launch with
+  `tomllib.TOMLDecodeError: Invalid statement (at line 1, column 1)` when the
+  config file existed but was empty or contained garbage. `common.config._read_file`
+  now treats an empty file as a valid "no overrides" config and wraps every
+  TOML/JSON parse in try/except, falling back to built-in defaults with a
+  warning naming the offending file instead of aborting startup.
+
 ## [1.4.5] - 2026-06-20
 
 ### Fixed
