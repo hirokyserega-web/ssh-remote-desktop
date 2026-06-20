@@ -221,9 +221,17 @@ download_to() {
 
 # Verify the SHA256 of $1 (archive path) against the release SHA256SUMS.
 # Downloads SHA256SUMS from the same release and greps the matching line.
+# $3 (optional) = the release asset name to look up in SHA256SUMS. When the
+# archive was downloaded into an mktemp path, basename($1) is a random string
+# (e.g. srd-1rrF5n) that never appears in SHA256SUMS, so callers should pass
+# the real asset name here.
 verify_sha256() {
-  local archive="$1" version="$2" base sums_url sums_file expected actual
-  base="$(basename "$archive")"
+  local archive="$1" version="$2" expected_name="${3:-}" base sums_url sums_file expected actual
+  if [[ -n "$expected_name" ]]; then
+    base="$expected_name"
+  else
+    base="$(basename "$archive")"
+  fi
   if [[ -n "$version" ]]; then
     sums_url="$REPO_URL/releases/download/v${version}/SHA256SUMS"
   else
@@ -235,7 +243,7 @@ verify_sha256() {
     warn "SHA256SUMS unavailable from release; skipping checksum verification."
     return 0
   fi
-  expected=$(grep -E " ${base}\$" "$sums_file" | awk '{print $1}' | head -1)
+  expected=$(grep -E " ${base}$" "$sums_file" | awk '{print $1}' | head -1)
   rm -f "$sums_file"
   if [[ -z "$expected" ]]; then
     warn "No SHA256 entry for $base in SHA256SUMS; skipping verification."
@@ -286,7 +294,7 @@ install_release_binaries() {
       missing=1
       continue
     fi
-    if ! verify_sha256 "$archive" "$VERSION"; then
+    if ! verify_sha256 "$archive" "$VERSION" "$asset"; then
       rm -f "$archive"
       missing=1
       continue
@@ -421,7 +429,7 @@ install_system_deps() {
         openssh-server ffmpeg xdg-utils \
         || true
       ;;
-    arch|manjaro)
+    arch|manjaro|endeavouros)
       pkg_install \
         python python-pip \
         qt6-base qt6-wayland \
@@ -444,7 +452,7 @@ install_system_deps() {
   case "$DISTRO" in
     ubuntu|debian|linuxmint|pop) pkg_install python3-pam || pkg_install libpam0g-dev || true;;
     fedora|centos|rhel|rocky|almalinux) pkg_install python-pam pam-devel || true;;
-    arch|manjaro) pkg_install python-pam || true;;
+    arch|manjaro|endeavouros) pkg_install python-pam || true;;
     alpine) pkg_install py3-pam || true;;
   esac
 }
