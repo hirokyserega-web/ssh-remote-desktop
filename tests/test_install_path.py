@@ -264,7 +264,9 @@ def test_post_install_repoints_real_user_under_sudo(tmp_path):
         b.write_text("#!/bin/sh\nexit 0\n")
         b.chmod(0o755)
 
+    root_home = tmp_path / "roothome"
     real_home = tmp_path / "alice"
+    root_home.mkdir()
     real_home.mkdir()
 
     snippet = textwrap.dedent(f"""\
@@ -276,7 +278,7 @@ def test_post_install_repoints_real_user_under_sudo(tmp_path):
         SUDO_USER=alice
         # launcher_dirs touches system dirs as root; stub it to avoid needing
         # /usr/share write access in the sandbox.
-        launcher_dirs() {{ BINDIR=/usr/local/bin; APPSDIR=/tmp/srdapps; ICONDIR=/tmp/srdicons; mkdir -p "$BINDIR" "$APPSDIR" "$ICONDIR"; }}
+        launcher_dirs() {{ BINDIR={str(tmp_path / "bin")}; APPSDIR={str(tmp_path / "apps")}; ICONDIR={str(tmp_path / "icons")}; mkdir -p "$BINDIR" "$APPSDIR" "$ICONDIR"; }}
         install_desktop_entries() {{ :; }}
         ensure_path() {{ :; }}
         post_install >/tmp/srd_post_$$.out 2>&1
@@ -284,7 +286,7 @@ def test_post_install_repoints_real_user_under_sudo(tmp_path):
         cat /tmp/srd_post_$$.out; rm -f /tmp/srd_post_$$.out
         echo "REAL_LINK=$(readlink {str(real_home)}/.local/bin/rd-server 2>/dev/null || echo NONE)"
     """)
-    r = _run_install_snippet(snippet, env={"HOME": "/root"})
+    r = _run_install_snippet(snippet, env={"HOME": str(root_home)})
     assert r.returncode == 0, r.stderr
     assert "POST_RC=0" in r.stdout
     assert str(target_dir / "bin" / "rd-server") in r.stdout, (
