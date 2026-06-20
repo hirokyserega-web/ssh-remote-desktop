@@ -118,10 +118,15 @@ jobs:
             else
               tar -C dist -czf "staging/${archive}" "rd-${comp}"
             fi
+            # Compute the checksum with a bare filename (cd into staging) so the
+            # published SHA256SUMS lists assets by name, not "staging/<name>".
+            # install.sh's verify_sha256 matches the basename at end-of-line; a
+            # "staging/" prefix would make that match fail and verification
+            # would be silently skipped.
             if command -v sha256sum >/dev/null 2>&1; then
-              line=$(sha256sum "staging/${archive}")
+              line=$(cd staging && sha256sum "${archive}")
             else
-              line=$(shasum -a 256 "staging/${archive}")
+              line=$(cd staging && shasum -a 256 "${archive}")
             fi
             echo "$line"
             sha_lines="${sha_lines}${line}"$'\n'

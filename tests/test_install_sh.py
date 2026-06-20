@@ -62,6 +62,47 @@ def test_unknown_flag_errors():
     assert r.returncode != 0
 
 
+def test_verify_sha256_matches_prefixed_paths(tmp_path):
+    """verify_sha256 must match a SHA256SUMS line whose filename carries a
+    directory prefix (e.g. "staging/<asset>"), not only bare names.
+
+    The Release pipeline emitted "staging/<archive>" entries; the old grep
+    (` ${base}$`) required a space before the basename and so missed the
+    slash-prefixed form, silently skipping checksum verification.
+    """
+    import hashlib
+
+    # Fake archive + its real sha256.
+    archive = tmp_path / "ssh-remote-desktop-client-linux-x86_64.tar.gz"
+    archive.write_bytes(b"hello world")
+    digest = hashlib.sha256(b"hello world").hexdigest()
+    base = archive.name
+
+    # SHA256SUMS with the historical "staging/" prefix (two-space separator).
+    sums = tmp_path / "SHA256SUMS"
+    sums.write_text(f"{digest}  staging/{base}\n")
+
+    snippet = (
+        "set -euo pipefail\n"
+        f"source {INSTALL!r}\n"
+        "OS=linux\n"
+        # Override download_to so verify_sha256 reads our local SHA256SUMS
+        # instead of curling the real one from GitHub.
+        f"download_to() {{ cp {str(sums)!r} \"$2\"; }}\n"
+        f"verify_sha256 {str(archive)!r} '' {base!r}\n"
+        'echo "VERIFY_RC=$?"\n'
+    )
+    r = subprocess.run(
+        ["bash", "-c", snippet], capture_output=True, text=True,
+        env={**os.environ, "SRD_NO_RUN_MAIN": "1"},
+    )
+    # verify_sha256 returns 0 when the checksum matches; a skip prints a WARN
+    # and still returns 0, so assert the matching path was taken (no skip warn).
+    assert "VERIFY_RC=0" in r.stdout
+    assert "No SHA256 entry" not in r.stdout
+    assert "skipping" not in r.stdout.lower()
+
+
 def test_uninstall_requires_target_dir():
     """--uninstall without SSH_REMOTE_DESKTOP_DIR set should still be a clean
     no-op (or warn) rather than crash; we only check it doesn't blow up
