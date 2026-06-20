@@ -545,9 +545,71 @@ write_icon_svg() {
 
 # Create a .desktop launcher for a component. $1 = component (client|server-gui),
 # $2 = absolute binary path, $3 = display name, $4 = generic name, $5 = icon name.
+# Write the rd-launch session-env wrapper next to the binaries. The wrapper
+# reconstructs WAYLAND_DISPLAY / XDG_RUNTIME_DIR for menu-launched apps (the
+# classic "click the menu entry and nothing happens" case on Wayland, where
+# D-Bus / systemd --user activation doesn't propagate the interactive shell
+# env). Prefer the committed scripts/rd-launch.sh when available; fall back to
+# an inline heredoc for curl|bash binary installs where the repo scripts
+# aren't present. The inline heredoc is kept byte-identical to
+# scripts/rd-launch.sh — tests/test_install_launcher.py enforces that.
+write_rd_launch() {
+  local out="$TARGET_DIR/bin/rd-launch"
+  mkdir -p "$(dirname "$out")"
+  local src=""
+  [[ -n "${HERE:-}" && -f "$HERE/scripts/rd-launch.sh" ]] && src="$HERE/scripts/rd-launch.sh"
+  [[ -z "$src" && -f "$TARGET_DIR/scripts/rd-launch.sh" ]] && src="$TARGET_DIR/scripts/rd-launch.sh"
+  if [[ -n "$src" ]]; then
+    install -m 0755 "$src" "$out"
+  else
+    # >>> rd-launch begin (keep in sync with scripts/rd-launch.sh)
+    cat > "$out" <<'RDLAUNCH'
+#!/usr/bin/env bash
+# rd-launch — session-env wrapper for rd-client / rd-server-gui.
+# Reconstructs WAYLAND_DISPLAY / XDG_RUNTIME_DIR for menu-launched apps so Qt
+# can find a display on Wayland. Usage: rd-launch <real-binary> [args...]
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "rd-launch: missing binary argument" >&2
+  exit 64
+fi
+BIN="$1"; shift
+
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+  uid="$(id -u 2>/dev/null || echo 0)"
+  if [[ -d "/run/user/${uid}" ]]; then
+    export XDG_RUNTIME_DIR="/run/user/${uid}"
+  fi
+fi
+
+if [[ -z "${WAYLAND_DISPLAY:-}" && -n "${XDG_RUNTIME_DIR:-}" && -d "${XDG_RUNTIME_DIR}" ]]; then
+  for cand in "${XDG_RUNTIME_DIR}"/wayland-*; do
+    [[ -S "$cand" ]] || continue
+    WAYLAND_DISPLAY="${cand##*/}"
+    export WAYLAND_DISPLAY
+    break
+  done
+fi
+
+exec "$BIN" "$@"
+RDLAUNCH
+    # <<< rd-launch end
+    chmod 0755 "$out"
+  fi
+  # Expose on PATH via the launcher bindir so the .desktop Exec path is stable
+  # and doesn't depend on $TARGET_DIR being on PATH.
+  ln -sf "$out" "$BINDIR/rd-launch" 2>/dev/null || true
+}
+
 write_desktop_entry() {
-  local comp="$1" bin="$2" name="$3" generic="$4" icon="$5"
+  local comp="$1" bin="$2" name="$3" generic="$4" icon="$5" launcher="${6:-}"
   local file="$APPSDIR/ssh-remote-desktop-${comp}.desktop"
+  local exec_line="$bin"
+  # Route through rd-launch when present: it restores the Wayland session env
+  # (WAYLAND_DISPLAY / XDG_RUNTIME_DIR) that menu-launched processes often
+  # lack, so the GUI actually opens instead of dying silently.
+  [[ -n "$launcher" && -x "$launcher" ]] && exec_line="$launcher $bin"
   cat > "$file" <<DESKTOP
 [Desktop Entry]
 Type=Application
@@ -555,7 +617,7 @@ Version=1.0
 Name=${name}
 GenericName=${generic}
 Comment=SSH Remote Desktop
-Exec=${bin}
+Exec=${exec_line}
 Icon=${icon}
 Terminal=false
 Categories=Network;RemoteAccess;Qt;
@@ -570,6 +632,10 @@ DESKTOP
 install_desktop_entries() {
   [[ "$OS" == "linux" ]] || return 0
   launcher_dirs
+  # Install the session-env wrapper before building .desktop entries so the
+  # Exec= line can route through it (fixes menu launches on Wayland, where the
+  # launched process often lacks WAYLAND_DISPLAY / XDG_RUNTIME_DIR).
+  write_rd_launch
   local sel comps comp bin icon_name
   sel="$(default_components)"
   comps="$(expand_components "$sel")"
@@ -584,7 +650,8 @@ install_desktop_entries() {
         icon_name="ssh-remote-desktop-client"
         write_icon_svg client "$ICONDIR/${icon_name}.svg"
         write_desktop_entry client "$BINDIR/rd-client" \
-          "SSH Remote Desktop — Client" "Remote Desktop Client" "$icon_name"
+          "SSH Remote Desktop — Client" "Remote Desktop Client" "$icon_name" \
+          "$BINDIR/rd-launch"
         log "Created launcher: $APPSDIR/ssh-remote-desktop-client.desktop"
         ;;
       server)
@@ -594,7 +661,8 @@ install_desktop_entries() {
         icon_name="ssh-remote-desktop-server-gui"
         write_icon_svg server-gui "$ICONDIR/${icon_name}.svg"
         write_desktop_entry server-gui "$BINDIR/rd-server-gui" \
-          "SSH Remote Desktop — Server Panel" "Server Management Panel" "$icon_name"
+          "SSH Remote Desktop — Server Panel" "Server Management Panel" "$icon_name" \
+          "$BINDIR/rd-launch"
         log "Created launcher: $APPSDIR/ssh-remote-desktop-server-gui.desktop"
         ;;
     esac
@@ -633,8 +701,11 @@ post_install() {
   if [[ -d "$HOME/.local/bin" ]] || mkdir -p "$HOME/.local/bin"; then
     # Prefer prebuilt binaries in $TARGET_DIR/bin; fall back to the venv's
     # console scripts when installed from source. Include rd-server-gui so the
-    # server management panel is on PATH alongside the CLI tools.
-    for name in rd-server rd-client rd-server-gui; do
+    # server management panel is on PATH alongside the CLI tools. rd-launch is
+    # the session-env wrapper used by the .desktop entries (installed by
+    # install_desktop_entries via write_rd_launch); symlink it here too so
+    # `rd-launch <bin>` works from a terminal.
+    for name in rd-server rd-client rd-server-gui rd-launch; do
       local target=""
       if [[ -x "$TARGET_DIR/bin/$name" ]]; then
         target="$TARGET_DIR/bin/$name"
@@ -659,7 +730,7 @@ do_uninstall() {
   # 1. The install directory (prebuilt binaries, venv, sources).
   rm -rf "$TARGET_DIR"
   # 2. The PATH symlinks.
-  for name in rd-server rd-client rd-server-gui; do
+  for name in rd-server rd-client rd-server-gui rd-launch; do
     if [[ -L "$HOME/.local/bin/$name" || -e "$HOME/.local/bin/$name" ]]; then
       local link_target
       link_target=$(readlink -f "$HOME/.local/bin/$name" 2>/dev/null || true)
@@ -672,7 +743,7 @@ do_uninstall() {
     fi
   done
   # 2b. System-wide symlinks (root install path).
-  for name in rd-server rd-client rd-server-gui; do
+  for name in rd-server rd-client rd-server-gui rd-launch; do
     if [[ -L "/usr/local/bin/$name" ]]; then
       local link_target
       link_target=$(readlink -f "/usr/local/bin/$name" 2>/dev/null || true)

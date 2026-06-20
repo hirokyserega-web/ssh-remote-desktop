@@ -399,7 +399,9 @@ On Linux `QT_QPA_PLATFORM` is chosen automatically: when `WAYLAND_DISPLAY` is se
 
 - **Windows:** install via `install-client-windows.ps1` (see [Quick start](#quick-start)). Then `rd-client` in a new shell, or `rd-client --keygen` to generate a key.
 - **Linux X11:** `rd-client` runs with `QT_QPA_PLATFORM=xcb`.
-- **Linux Wayland:** `QT_QPA_PLATFORM=wayland;xcb` (native Wayland with XWayland fallback if the `wayland` Qt plugin is missing from the build).
+- **Linux Wayland:** `QT_QPA_PLATFORM=wayland;xcb` (native Wayland with XWayland fallback if the `wayland` Qt plugin is missing from the build). Wayland detection is multi-signal: `WAYLAND_DISPLAY` → `XDG_SESSION_TYPE=wayland` → a `wayland-N` socket in `XDG_RUNTIME_DIR`, and `XDG_RUNTIME_DIR` is recovered from `/run/user/<uid>` when missing from the environment.
+- **Launching from the app menu (Wayland):** `.desktop` entries run the binary through the `rd-launch` wrapper, which restores the session variables (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`) that are absent from the D-Bus / `systemd --user` activation environment — otherwise on Hyprland/Sway/river/non-systemd GNOME clicking the menu entry silently opens nothing.
+- **If the client still won't open:** crash details are written to `~/.config/ssh-remote-desktop/client-launch.log` (Qt platform, env vars, traceback) — attach it to an issue. A dialog with the log path is shown when possible.
 
 </details>
 
