@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-06-20
+
 ### Fixed
 - Nuitka-built ``rd-client`` failed at startup with
   ``ImportError: attempted relative import with no known parent package``
