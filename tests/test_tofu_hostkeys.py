@@ -91,7 +91,7 @@ def test_tofu_unknown_accepted_then_known(key, store):
     async def _run():
         store._load.cache_clear() if hasattr(store._load, "cache_clear") else None
         asked = []
-        async def ask(host, port, fp, first_time):
+        async def ask(host, port, fp, first_time, old_fingerprint=None):
             asked.append((host, port, fp, first_time))
             return True
         client = TofuClient(store, ask)
@@ -111,7 +111,7 @@ def test_tofu_unknown_rejected_raises(key, store):
     """Unknown key + reject → HostKeyRejected."""
 
     async def _run():
-        async def ask(host, port, fp, first_time):
+        async def ask(host, port, fp, first_time, old_fingerprint=None):
             return False
         client = TofuClient(store, ask)
         with pytest.raises(HostKeyRejected):
@@ -126,7 +126,7 @@ def test_tofu_mismatch_rejected_raises(key, store):
     async def _run():
         other = asyncssh.generate_private_key("ssh-ed25519", "test-other")
         store.add("myhost", 22, key)  # record first key
-        async def ask(host, port, fp, first_time):
+        async def ask(host, port, fp, first_time, old_fingerprint=None):
             return False
         client = TofuClient(store, ask)
         with pytest.raises(HostKeyMismatch):
@@ -141,7 +141,7 @@ def test_tofu_mismatch_accepted_overwrites(key, store):
     async def _run():
         other = asyncssh.generate_private_key("ssh-ed25519", "test-other")
         store.add("myhost", 22, key)
-        async def ask(host, port, fp, first_time):
+        async def ask(host, port, fp, first_time, old_fingerprint=None):
             assert first_time is False  # mismatch, not first-time
             return True
         client = TofuClient(store, ask)
@@ -160,7 +160,7 @@ def test_tofu_unknown_accepted_not_remembered_not_persisted(key, store):
     async def _run():
         asked = []
 
-        async def ask(host, port, fp, first_time):
+        async def ask(host, port, fp, first_time, old_fingerprint=None):
             asked.append(first_time)
             return (True, False)  # accept, but do not remember
 
@@ -183,7 +183,7 @@ def test_tofu_mismatch_accepted_not_remembered_not_overwritten(key, store):
         other = asyncssh.generate_private_key("ssh-ed25519", "test-other")
         store.add("myhost", 22, key)  # original key on record
 
-        async def ask(host, port, fp, first_time):
+        async def ask(host, port, fp, first_time, old_fingerprint=None):
             assert first_time is False
             return (True, False)  # accept changed key, but do not remember
 
