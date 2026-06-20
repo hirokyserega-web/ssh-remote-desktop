@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-06-20
+
 ### Fixed
 - Release pipeline wrote SHA256SUMS with a `staging/` path prefix
   (`staging/<asset>`); `install.sh`'s checksum matcher required a space
