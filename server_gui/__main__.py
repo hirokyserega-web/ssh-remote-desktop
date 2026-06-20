@@ -491,8 +491,14 @@ def main(argv=None) -> int:
     if args.minimized:
         args.tray = True
 
-    # Headless / offscreen friendly (CI can at least construct the app).
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # Headless / offscreen friendly: only force the offscreen Qt platform
+    # when there is no display, so real desktops get a normal window (Qt
+    # auto-selects xcb/wayland). Unconditionally defaulting to offscreen
+    # hid the window on every desktop where QT_QPA_PLATFORM was unset.
+    if not os.environ.get("QT_QPA_PLATFORM"):
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+                or os.environ.get("XDG_SESSION_TYPE") in ("x11", "wayland")):
+            os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("rd-server-gui")
