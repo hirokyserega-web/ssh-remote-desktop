@@ -153,7 +153,7 @@ pkg_install() {
       sudo -n dnf install -y "${pkgs[@]}"
       ;;
     arch|manjaro|endeavouros)
-      sudo -n pacman -S --noconfirm "${pkgs[@]}"
+      sudo -n pacman -S --noconfirm --needed "${pkgs[@]}"
       ;;
     opensuse*|sles)
       sudo -n zypper install -y "${pkgs[@]}"
@@ -170,8 +170,12 @@ pkg_install() {
 
 ensure_sudo() {
   if ! sudo -n true 2>/dev/null; then
-    err "This installer needs sudo to install system packages. Re-run as a sudoer, or install manually."
-    exit 1
+    # No cached/passwordless sudo — prompt once to validate and cache
+    # credentials so subsequent `sudo -n` calls in pkg_install succeed.
+    if ! sudo -v 2>/dev/null; then
+      err "This installer needs sudo to install system packages. Re-run as a sudoer, or install manually."
+      exit 1
+    fi
   fi
 }
 
