@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Nuitka-built ``rd-client`` failed at startup with
+  ``ImportError: attempted relative import with no known parent package``
+  because ``build_client_{linux,windows,macos}.sh`` pointed Nuitka at
+  ``client/__main__.py`` directly (running it as ``__main__`` without a parent
+  package). The lazy relative imports inside ``main()``
+  (``from .theme import …``, ``from .main_window import …``) only fire on a real
+  launch — not ``--version``/``--help`` — so the regression slipped past smoke
+  tests. All three client build scripts now build via ``rd_client_entry.py``
+  (which imports ``client.__main__:main`` normally), mirroring the server fix.
+
 ## [1.4.3] - 2026-06-20
 
 ### Fixed
