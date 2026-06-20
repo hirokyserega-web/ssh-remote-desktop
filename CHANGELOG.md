@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.5] - 2026-06-20
+
 ### Fixed
 - Arch Linux: the server install tried to `pacman -S xauth`, but the package
   is named `xorg-xauth` on Arch — the install aborted with "target not found:
