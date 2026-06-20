@@ -270,7 +270,12 @@ verify_sha256() {
     warn "SHA256SUMS unavailable from release; skipping checksum verification."
     return 0
   fi
-  expected=$(grep -E " ${base}$" "$sums_file" | awk '{print $1}' | head -1)
+  # Match the basename at end of line, accepting either a space (bare name,
+  # e.g. "<hash>  ssh-remote-desktop-...tar.gz") or a slash (prefixed path,
+  # e.g. "<hash>  staging/ssh-remote-desktop-...tar.gz") before it. The Release
+  # pipeline historically wrote SHA256SUMS with a "staging/" prefix; without
+  # accepting the slash, verification silently no-matched and was skipped.
+  expected=$(grep -E "[ /]${base}$" "$sums_file" | awk '{print $1}' | head -1)
   rm -f "$sums_file"
   if [[ -z "$expected" ]]; then
     warn "No SHA256 entry for $base in SHA256SUMS; skipping verification."
