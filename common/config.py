@@ -133,21 +133,57 @@ class ClientConfig:
         return value
 
 
+def _warn_parse_failure(path: Path, exc: Exception) -> None:
+    """Log a parse failure and fall back to defaults instead of crashing.
+
+    A corrupted/empty/half-written config file must never prevent the app from
+    launching — the user just gets the built-in defaults and a warning telling
+    them which file to fix. Printed to stderr (logger isn't set up yet at config
+    load time).
+    """
+    import sys
+    print(f"WARNING: ignoring unreadable config {path}: {exc}. "
+          f"Using built-in defaults. Fix or remove the file to silence this.",
+          file=sys.stderr)
+
+
 def _read_file(path: Path) -> dict:
     if not path.exists():
         return {}
-    text = path.read_text(encoding="utf-8")
+    # An empty file is a valid "no overrides" config — don't hand an empty
+    # string to the parsers (tomllib rejects it as "Invalid statement at
+    # line 1, column 1", which is exactly the crash users saw).
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _warn_parse_failure(path, exc)
+        return {}
+    if not text.strip():
+        return {}
     suffix = path.suffix.lower()
     if suffix in (".toml", ".tml") and tomllib is not None:
-        return tomllib.loads(text)
+        try:
+            return tomllib.loads(text)
+        except Exception as exc:
+            _warn_parse_failure(path, exc)
+            return {}
     if suffix in (".json", ".js"):
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except Exception as exc:
+            _warn_parse_failure(path, exc)
+            return {}
     # Fallback: try JSON then TOML.
     try:
         return json.loads(text)
     except Exception:
         if tomllib is not None:
-            return tomllib.loads(text)
+            try:
+                return tomllib.loads(text)
+            except Exception as exc:
+                _warn_parse_failure(path, exc)
+        else:
+            _warn_parse_failure(path, ValueError("no TOML/JSON parser available"))
     return {}
 
 
