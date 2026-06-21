@@ -246,8 +246,17 @@ class Transport:
         # TOFU client: ask() is awaited on the asyncio loop and blocks until
         # the GUI resolves it via confirm_host_key(). The non-interactive
         # fallback is used only when no GUI callback was wired (headless use).
+        #
+        # Use client_factory (a callable returning an SSHClient) rather than
+        # passing the instance directly as `client=`: the latter only exists on
+        # very recent asyncssh builds and on the pinned floor (>=2.23) it falls
+        # through into SSHClientConnectionOptions.prepare(), which has no
+        # `client` parameter, raising "got an unexpected keyword argument
+        # 'client'" on every connect. client_factory is supported on every
+        # asyncssh release the floor allows and produces one fresh TofuClient
+        # per connection (its state is self-contained, not shared with us).
         ask = self._ask_host_key if self.on_host_key is not None else _noninteractive_ask
-        opts["client"] = TofuClient(self._hostkeys, ask)
+        opts["client_factory"] = lambda: TofuClient(self._hostkeys, ask)
         if self.cfg.auth == "password" and self._password is not None:
             opts["password"] = self._password
             opts["client_keys"] = None

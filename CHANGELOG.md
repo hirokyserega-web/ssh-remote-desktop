@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `rd-client` could not connect to anything: every connection failed with
+  ``SSHClientConnectionOptions.prepare() got an unexpected keyword argument
+  'client'``. ``client/transport._connect_options`` passed the TOFU client as
+  ``asyncssh.connect(..., client=...)``, but on the pinned asyncssh floor
+  (``>=2.23``) that kwarg is funnelled into ``SSHClientConnectionOptions.prepare()``,
+  which has no ``client`` parameter — so every connect raised ``TypeError``
+  before the TCP connection was even attempted and the transport loop crashed
+  after the retry budget. Switched to ``client_factory`` (a callable returning
+  an ``SSHClient``), which is supported on every asyncssh release in range and
+  produces one fresh ``TofuClient`` per connection (its state is self-contained).
+  Added a regression test pinning the options shape against the installed
+  asyncssh.
+
 ## [1.4.7] - 2026-06-21
 
 ### Fixed
