@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.7] - 2026-06-21
+
 ### Fixed
 - `rd-server` printed a multi-page asyncio/asyncssh traceback instead of an
   actionable message when its port was already in use (the common case: a
