@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.8] - 2026-06-21
+
 ### Fixed
 - `rd-client` could not connect to anything: every connection failed with
   ``SSHClientConnectionOptions.prepare() got an unexpected keyword argument

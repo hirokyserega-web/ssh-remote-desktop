@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ssh-remote-desktop"
-version = "1.4.7"
+version = "1.4.8"
 description = "SSH-only remote desktop (X11 + Wayland)"
 readme = "README.md"
 license = {file = "LICENSE"}
