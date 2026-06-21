@@ -185,8 +185,12 @@ class TofuClient(asyncssh.SSHClient):
     """asyncssh client that does TOFU host-key validation.
 
     Pass a :class:`KnownHostsStore` and an ``ask`` coroutine to the
-    constructor, then pass the instance to ``asyncssh.connect(..., client=...)``
-    with ``known_hosts=None`` (so asyncssh defers all validation to us).
+    constructor, then hand a factory returning the instance to
+    ``asyncssh.connect(..., client_factory=lambda: TofuClient(...))`` with
+    ``known_hosts=None`` (so asyncssh defers all validation to us). Use
+    ``client_factory`` (a callable), not the ``client=`` instance kwarg — the
+    latter only exists on very recent asyncssh builds and on the pinned floor
+    (>=2.23) it raises "got an unexpected keyword argument 'client'".
 
     ``ask(host, port, fingerprint, first_time)`` is awaited on the asyncio
     transport loop; it must return ``True`` to accept the key and ``False`` to
