@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `rd-server` printed a multi-page asyncio/asyncssh traceback instead of an
+  actionable message when its port was already in use (the common case: a
+  previous foreground `rd-server` left over from an earlier install still held
+  the port). `broker.start()` now wraps the bind in a `PortInUseError` and
+  `main()` prints a one-line hint naming the port plus the exact commands to
+  find and stop the old process (`ss -tlnp | grep <port>`, `pkill -f rd-server`,
+  `rd-server --stop`) or pick another port. Foreground launches also now check
+  the daemon pidfile for a live process first, so a stale-but-running daemon
+  is reported as "already running" instead of racing the port.
+
 ## [1.4.6] - 2026-06-20
 
 ### Fixed

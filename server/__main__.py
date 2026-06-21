@@ -35,7 +35,7 @@ from pathlib import Path
 
 from common.config import load_server_config
 
-from .broker import Broker
+from .broker import Broker, PortInUseError
 from .daemon import (
     daemonize,
     default_pidfile,
@@ -349,6 +349,23 @@ async def _run_broker(cfg, pidfile: str | None) -> int:
     return 0
 
 
+def _port_in_use_hint(exc: PortInUseError) -> str:
+    """A one-line, actionable message for a port-in-use failure.
+
+    Replaces the multi-page asyncio/asyncssh traceback the user used to see
+    when a previous rd-server (often a leftover foreground process from an
+    earlier install) was still holding the port.
+    """
+    return (
+        f"rd-server: cannot listen on {exc.host}:{exc.port} — the port is "
+        f"already in use.\n"
+        f"  Most likely a previous rd-server is still running. Find and stop it:\n"
+        f"    ss -tlnp | grep {exc.port}      # show what holds the port\n"
+        f"    pkill -f rd-server              # stop all rd-server processes\n"
+        f"    rd-server --stop                # stop a daemonized instance (uses its pidfile)\n"
+        f"  Or pick a different port with: rd-server --port <PORT>"
+    )
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -396,13 +413,27 @@ def main(argv=None) -> int:
         log.info("rd-server daemonized, pid=%d", os.getpid())
         try:
             return asyncio.run(_run_broker(cfg, pidfile))
+        except PortInUseError as exc:
+            print(_port_in_use_hint(exc), file=sys.stderr)
+            return 1
         finally:
             remove_pidfile(pidfile)
 
     # Foreground (default, also under systemd Type=simple).
+    # Even in foreground mode, bail out early if a daemon pidfile points at a
+    # live process — otherwise we race the running instance for the port and
+    # the user gets an opaque bind error instead of "already running".
+    existing = live_pid_from_pidfile(pidfile)
+    if existing is not None:
+        print(f"rd-server already running (pid {existing}); use --stop first.",
+              file=sys.stderr)
+        return 1
     _configure_logging(cfg, daemon=False)
     try:
         return asyncio.run(_run_broker(cfg, pidfile if args.pidfile else None))
+    except PortInUseError as exc:
+        print(_port_in_use_hint(exc), file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         print("\nshutting down", file=sys.stderr)
         return 0
