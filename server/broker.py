@@ -36,6 +36,23 @@ from .session import Session, UserInfo
 log = logging.getLogger("rd.broker")
 
 
+class PortInUseError(OSError):
+    """Raised when the SSH listener can't bind its port.
+
+    Wraps the underlying ``OSError`` from ``asyncssh.create_server`` so callers
+    can catch it specifically and print an actionable hint instead of a raw
+    asyncio traceback. Common cause: a previous ``rd-server`` (often a leftover
+    foreground process from an earlier install) is still holding the port.
+    """
+
+    def __init__(self, host: str, port: int, cause: OSError):
+        self.host = host
+        self.port = port
+        self.original = cause
+        super().__init__(
+            f"cannot bind {host}:{port}: {cause.strerror or cause} (errno {cause.errno})"
+        )
+
 class _SSHServer(asyncssh.SSHServer if asyncssh else object):
     """Per-connection asyncssh server: decides auth and remembers the user."""
 
@@ -181,15 +198,25 @@ class Broker:
         def server_factory():
             return _SSHServer(self)
 
-        self._server = await asyncssh.create_server(
-            server_factory,
-            self.cfg.host, self.cfg.port,
-            server_host_keys=[host_key_path],
-            process_factory=self._handle_session,
-            sftp_factory=self._make_sftp_factory() if self.cfg.files_enabled else None,
-            allow_scp=False,
-            encoding=None,
-        )
+        try:
+            self._server = await asyncssh.create_server(
+                server_factory,
+                self.cfg.host, self.cfg.port,
+                server_host_keys=[host_key_path],
+                process_factory=self._handle_session,
+                sftp_factory=self._make_sftp_factory() if self.cfg.files_enabled else None,
+                allow_scp=False,
+                encoding=None,
+            )
+        except OSError as exc:
+            # Turn the deep asyncio/asyncssh traceback ("OSError: [Errno 98]
+            # error while attempting to bind on address ('0.0.0.0', 2222):
+            # address already in use") into a one-line, actionable message.
+            # This usually means a previous rd-server is still running (often a
+            # foreground process left over from an earlier install whose port
+            # wasn't released). Re-raise a typed error so main() can print the
+            # hint instead of dumping a wall of traceback.
+            raise PortInUseError(self.cfg.host, self.cfg.port, exc) from exc
         self._reaper_task = asyncio.create_task(self._reaper())
         log.info("broker listening on %s:%d", self.cfg.host, self.cfg.port)
 
