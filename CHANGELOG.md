@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.10] - 2026-06-23
+
 ### Fixed
 - The server control panel (`rd-server-gui`) showed "Не установлен" / "Not
   installed" and refused to start the server ("Не удалось запустить сервер")
