@@ -74,9 +74,12 @@ class ServerGuiWindow(QMainWindow):
         self.prefs = prefs
         self.ctrl = ConfigController(config_path)
         # The service controller is picked per current state (systemd if the
-        # unit is installed, else daemon-mode fallback).
+        # unit is installed, else daemon-mode fallback). Declared here and
+        # picked AFTER _load_form_from_config() sets self.cfg — calling
+        # pick_controller(self.cfg) before that raised AttributeError (cfg
+        # didn't exist yet), which the try/except in _refresh_svc swallowed,
+        # leaving _svc=None and the panel stuck on "Не установлен".
         self._svc: ServiceController | None = None
-        self._refresh_svc()
 
         self.setWindowTitle(_tr("Настройки сервера"))
         self.resize(640, 720)
@@ -98,6 +101,12 @@ class ServerGuiWindow(QMainWindow):
         root.addLayout(self._build_bottom_bar())
 
         self._load_form_from_config()
+
+        # Pick the service controller now that self.cfg exists (systemd if the
+        # unit is installed, else daemon-mode fallback). Must run AFTER
+        # _load_form_from_config sets self.cfg, or pick_controller(self.cfg)
+        # raises and the panel gets stuck on "Не установлен".
+        self._refresh_svc()
 
         # --- status polling timer ------------------------------------------
         self._timer = QTimer(self)
