@@ -156,7 +156,7 @@ expand_components() {
   case "$sel" in
     both)
       case "$OS" in
-        linux) echo "client server";;
+        linux) echo "client server server-gui";;
         *) echo "client";;
       esac
       ;;
@@ -165,7 +165,9 @@ expand_components() {
 }
 
 asset_name() {
-  # $1 = component (client|server)
+  # $1 = component (client|server|server-gui). Generic: any component maps to
+  # ssh-remote-desktop-${comp}-${OS}-${ARCH}.${ext}, so server-gui yields
+  # ssh-remote-desktop-server-gui-linux-x86_64.tar.gz with no special casing.
   local comp="$1" ext
   case "$OS" in
     windows) ext="zip";;
@@ -507,6 +509,7 @@ maybe_build() {
   if [[ "$OS" == "linux" ]]; then
     (cd "$TARGET_DIR" && bash build_client_linux.sh && mv dist/rd-client bin/rd-client) || log "client build failed"
     (cd "$TARGET_DIR" && bash build_server_linux.sh && mv dist/rd-server bin/rd-server) || log "server build failed"
+    (cd "$TARGET_DIR" && bash build_server_gui_linux.sh && mv dist/rd-server-gui bin/rd-server-gui) || log "server-gui build failed"
   else
     log "macOS: no preconfigured build script — pip-installed packages only."
   fi
@@ -689,6 +692,14 @@ install_desktop_entries() {
         log "Created launcher: $APPSDIR/ssh-remote-desktop-client.desktop"
         ;;
       server)
+        # The rd-server daemon has no GUI launcher (it runs headless under
+        # systemd / as a daemon). Its menu entry is owned by the server-gui
+        # component below; do nothing here so we never create a dead launcher.
+        ;;
+      server-gui)
+        # Create the control-panel launcher only when rd-server-gui is actually
+        # installed — otherwise the menu would show a dead entry pointing at a
+        # missing binary.
         bin="$(resolve_component_bin rd-server-gui)"
         [[ -z "$bin" ]] && continue
         ln -sf "$bin" "$BINDIR/rd-server-gui" 2>/dev/null || true

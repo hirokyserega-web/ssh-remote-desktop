@@ -4,3 +4,7 @@
 evdev>=1.7
 pywayland>=0.4.13
 dbus-next>=0.2
+# PAM password authentication (server/auth.py imports `pam` dynamically).
+# Linux-only: python-pam ships no Windows/macOS wheels. PAM reads /etc/shadow,
+# so the server must run as root or with the running user in the `shadow` group.
+python-pam>=2.0.2

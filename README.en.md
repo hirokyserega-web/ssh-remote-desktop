@@ -666,7 +666,7 @@ Cutting a release — `scripts/release.sh` (`--dry-run`, `--no-push`).
 - **Under Wayland the client shows a placeholder frame:** the `xdg-desktop-portal` (and the matching backend — `-wlr`/`-gnome`/`-kde`) is not running. Start it and `pipewire`; check the server logs (`rd-server --status`, `journalctl -u ssh-remote-desktop.service`).
 - **"H.264 encoder init failed; falling back to JPEG":** PyAV is not installed, or ffmpeg lacks `libx264`. `pip install "ssh-remote-desktop[h264]"` and a system `ffmpeg`.
 - **`Permission denied (publickey)`:** the client's public key is not in the server user's `~/.ssh/authorized_keys`, or `allow_publickey = false` in `server.toml`.
-- **PAM auth does not work:** the server must run as root (or via the systemd unit with `User=root`) to access PAM and drop privileges via `run_as_user`.
+- **PAM auth does not work:** first, `python-pam` must be installed (`pip install python-pam>=2.0.2`; it is already in `requirements-linux.txt` and bundled into the prebuilt `rd-server` binary). Second, PAM reads `/etc/shadow`, so the server must run as **root** (or via the systemd unit with `User=root`) — or add the running user to the `shadow` group: `sudo usermod -aG shadow $USER`. When `allow_password = true` and PAM is unavailable, the server logs a clear ERROR at startup — check `journalctl -u ssh-remote-desktop.service`.
 - **`~/.local/bin` not on PATH:** `export PATH="$HOME/.local/bin:$PATH"` or open a new shell.
 - **Full removal:** `curl -fsSL .../install.sh | bash -s -- --uninstall` (removes the binary, venv, symlinks, empty config — but does NOT touch your keys and `known_hosts`).
 

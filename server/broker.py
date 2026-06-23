@@ -80,7 +80,7 @@ class _SSHServer(asyncssh.SSHServer if asyncssh else object):
             if username in validator:
                 return validator[username] == password
             return False
-        ok = check_password(username, password)
+        ok = check_password(username, password, service=self.broker.cfg.pam_service)
         log.info("password auth for %s: %s", username, "ok" if ok else "denied")
         return ok
 

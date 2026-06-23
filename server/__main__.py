@@ -35,6 +35,7 @@ from pathlib import Path
 
 from common.config import load_server_config
 
+from .auth import warn_if_pam_unavailable
 from .broker import Broker, PortInUseError
 from .daemon import (
     daemonize,
@@ -397,6 +398,13 @@ def main(argv=None) -> int:
                  and v is not None}
     cfg = load_server_config(args.config, overrides)
     pidfile = args.pidfile or default_pidfile()
+
+    # Surface a missing python-pam / wrong-privilege setup immediately at start
+    # instead of only on the first (opaque) rejected login. PAM reads
+    # /etc/shadow, so it needs root or the 'shadow' group; warn early so the
+    # operator sees the real cause before any client tries to connect.
+    warn_if_pam_unavailable(allow_password=cfg.allow_password,
+                            pam_service=cfg.pam_service)
 
     if args.daemon:
         existing = live_pid_from_pidfile(pidfile)

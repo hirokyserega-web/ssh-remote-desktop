@@ -89,6 +89,31 @@ def check_password(username: str, password: str, service: str = "login") -> bool
     return False
 
 
+def warn_if_pam_unavailable(*, allow_password: bool, pam_service: str = "login") -> None:
+    """Log a clear startup warning when password auth is on but PAM is missing.
+
+    Surfaces the root cause of "every password is rejected" immediately at
+    server start, instead of only on the first (opaque) denied login attempt.
+    Call this once from the server entry point after the config is loaded.
+
+    ``python-pam`` reads ``/etc/shadow``, so even when it IS installed the
+    server must run as root (or with the running user in the ``shadow`` group)
+    — that requirement is hinted in the message too.
+    """
+    if not allow_password:
+        return
+    if _HAVE_PAM:
+        return
+    log.error(
+        "allow_password=true but python-pam is unavailable — password "
+        "authentication will reject EVERY login. Fix: install python-pam "
+        "(pip install 'python-pam>=2.0.2', or your distro's python3-pam) and "
+        "run rd-server as root / via the systemd unit (User=root), or add the "
+        "running user to the 'shadow' group — PAM reads /etc/shadow. "
+        "(pam_service=%r)", pam_service,
+    )
+
+
 def authorized_keys_for(username: str) -> list[str]:
     """Return the raw OpenSSH public-key lines from the user's authorized_keys."""
     _require_pwd()
