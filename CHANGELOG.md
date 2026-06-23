@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.11] - 2026-06-23
+
 ### Fixed
 - `rd-server-gui`
 
