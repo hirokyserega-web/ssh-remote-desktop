@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.9] - 2026-06-23
+
 ### Fixed
 - Password authentication was always rejected: `python-pam` was not declared as
   a dependency, so it never landed in the venv or the Nuitka `rd-server` binary,
