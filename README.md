@@ -64,6 +64,8 @@
 curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-server-linux.sh | sudo bash
 ```
 
+Установит демон `rd-server` и графическую панель `rd-server-gui` (появится в меню приложений как «SSH Remote Desktop — Server Panel»), проверит SHA256, создаст симлинки в `~/.local/bin`.
+
 **Linux — клиент:**
 
 ```bash
@@ -201,7 +203,7 @@ curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop
 | `--no-build` | Пропустить сборку бинарей |
 | `--from-source` | Всегда из исходников, игнорировать релизы |
 | `--version X.Y.Z` | Конкретный релиз |
-| `--component client\|server\|both` | Что ставить (по умолчанию: `both` на Linux, `client` на остальных) |
+| `--component client\|server\|both` | Что ставить (по умолчанию: `both` на Linux, `client` на остальных). `server` на Linux ставит демон `rd-server` и панель `rd-server-gui`; можно явно указать `server-gui` для одной панели |
 | `--dir PATH` | Директория установки |
 | `--python BIN` | Конкретный интерпретатор |
 | `--uninstall` | Полностью удалить (бинарь, venv, симлинки, пустой конфиг) |
