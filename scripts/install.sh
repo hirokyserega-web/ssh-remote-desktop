@@ -41,7 +41,7 @@ Usage: install.sh [options]
   --python BIN     Use a specific Python interpreter
   --version X.Y.Z  Install a specific release version (binary or source tag)
   --from-source    Skip release binaries; always build from source
-  --component C    client | server | both (default: both on Linux, client elsewhere)
+  --component C    client | server | server-gui | both (default: both on Linux, client elsewhere; "server" on Linux = daemon + control panel)
   --uninstall      Remove the install (binary, venv, sources, symlinks, empty config)
   --diagnose       Print diagnostics (PATH, Qt platform, system libs) and exit
   --doctor         Alias for --diagnose
@@ -158,6 +158,16 @@ expand_components() {
       case "$OS" in
         linux) echo "client server server-gui";;
         *) echo "client";;
+      esac
+      ;;
+    server)
+      # "server" on Linux means the daemon AND its control panel: an operator
+      # installing the server expects rd-server-gui in the menu too, not just
+      # the headless rd-server binary. (server-gui ships no non-Linux asset, so
+      # it only expands here.)
+      case "$OS" in
+        linux) echo "server server-gui";;
+        *) echo "server";;
       esac
       ;;
     *) echo "$sel";;

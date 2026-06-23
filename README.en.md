@@ -64,6 +64,8 @@ Install the client and server with one command. By default a prebuilt binary fro
 curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop/main/scripts/install-server-linux.sh | sudo bash
 ```
 
+Installs the `rd-server` daemon and the `rd-server-gui` control panel (appears in the app menu as "SSH Remote Desktop — Server Panel"), verifies SHA256, and symlinks the binaries into `~/.local/bin`.
+
 **Linux — client:**
 
 ```bash
@@ -201,7 +203,7 @@ curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop
 | `--no-build` | Skip building binaries |
 | `--from-source` | Always from source, ignore releases |
 | `--version X.Y.Z` | A specific release |
-| `--component client\|server\|both` | What to install (default: `both` on Linux, `client` elsewhere) |
+| `--component client\|server\|both` | What to install (default: `both` on Linux, `client` elsewhere). `server` on Linux installs the `rd-server` daemon AND the `rd-server-gui` panel; pass `server-gui` to install the panel only |
 | `--dir PATH` | Install directory |
 | `--python BIN` | A specific interpreter |
 | `--uninstall` | Fully remove (binary, venv, symlinks, empty config) |
