@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- The server control panel (`rd-server-gui`) showed "Не установлен" / "Not
+  installed" and refused to start the server ("Не удалось запустить сервер")
+  on a fresh install, regardless of the port. Root cause: the window picked
+  its service controller (`pick_controller(self.cfg)`) in `__init__` before
+  `self.cfg` was created — the later `_load_form_from_config()` sets it. The
+  `AttributeError` was swallowed, leaving the controller as `None`, so no
+  start/stop command could ever run. Moved the controller selection to after
+  the config load. Added a regression test
+  (`tests/test_server_gui_init.py`).
+
 ## [1.4.9] - 2026-06-23
 
 ### Fixed
