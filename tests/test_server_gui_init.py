@@ -51,3 +51,38 @@ def test_window_status_not_not_installed_on_first_launch(qapp, tmp_path):
     # With a real controller picked, the label is the daemon/systemd state
     # ("Остановлен"/"Запущен"), never the dead-controller "Не установлен".
     assert win.lbl_state.text() != "Не установлен"
+
+
+# ---- tray icon PNG must be a valid image (regression: libpng error) ------- #
+def test_tray_icon_png_is_valid():
+    """The embedded TRAY_ICON_B64 must decode to a real PNG that libpng
+    accepts. A malformed IDAT chunk caused `libpng error: IDAT: invalid bit
+    length repeat` when the tray was initialized under sudo."""
+    import base64
+    import struct
+    import zlib
+
+    from server_gui.__main__ import TRAY_ICON_B64
+
+    raw = base64.b64decode(TRAY_ICON_B64)
+    # PNG signature
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG signature"
+    # Walk chunks: IHDR must be first, IDAT must decompress cleanly.
+    pos = 8
+    ihdr_seen = False
+    idat_data = b""
+    while pos < len(raw):
+        length = struct.unpack(">I", raw[pos:pos + 4])[0]
+        ctype = raw[pos + 4:pos + 8]
+        chunk_data = raw[pos + 8:pos + 8 + length]
+        if ctype == b"IHDR":
+            ihdr_seen = True
+            w, h = struct.unpack(">II", chunk_data[:8])
+            assert w > 0 and h > 0, f"invalid dimensions {w}x{h}"
+        elif ctype == b"IDAT":
+            idat_data += chunk_data
+        pos += 12 + length  # length + type + data + CRC
+    assert ihdr_seen, "no IHDR chunk"
+    assert idat_data, "no IDAT chunk"
+    # The actual libpng check: zlib must decompress without error.
+    zlib.decompress(idat_data)  # raises on malformed bit-length repeats

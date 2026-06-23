@@ -711,8 +711,14 @@ install_desktop_entries() {
         ;;
       server)
         # The rd-server daemon has no GUI launcher (it runs headless under
-        # systemd / as a daemon). Its menu entry is owned by the server-gui
-        # component below; do nothing here so we never create a dead launcher.
+        # systemd / as a daemon), so no .desktop entry here. BUT we must still
+        # symlink rd-server into $BINDIR so that `rd-server-gui` (and the user's
+        # terminal) can find it via PATH — the DaemonController falls back to
+        # `shutil.which("rd-server")` when the systemd unit isn't installed.
+        bin="$(resolve_component_bin rd-server)"
+        if [[ -n "$bin" ]]; then
+          ln -sf "$bin" "$BINDIR/rd-server" 2>/dev/null || true
+        fi
         ;;
       server-gui)
         # Create the control-panel launcher only when rd-server-gui is actually
