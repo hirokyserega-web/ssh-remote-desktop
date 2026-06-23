@@ -357,11 +357,35 @@ class DaemonController(ServiceController):
     def __init__(self, cfg: ServerGuiConfig, *, binary: str = "rd-server",
                  pidfile: Optional[str] = None):
         self.cfg = cfg
-        self.binary = binary
+        self.binary = self._resolve_binary(binary)
         self.pidfile = pidfile or default_pidfile()
+        self.last_error: Optional[str] = None
+
+    @staticmethod
+    def _resolve_binary(name: str) -> str:
+        """Find the rd-server executable.
+
+        Priority:
+          1. ``shutil.which(name)`` — on PATH (the common case after install).
+          2. Next to *this* process's executable — when rd-server-gui is a
+             Nuitka onefile binary installed alongside rd-server in the same
+             bin/ dir, but that dir isn't on PATH (e.g. a sudo launch where
+             only /usr/local/bin has the rd-server-gui symlink but rd-server
+             was missed).
+          3. The bare name as a last resort (so the error message is clear).
+        """
+        found = shutil.which(name)
+        if found:
+            return found
+        import sys as _sys
+        exe_dir = os.path.dirname(os.path.abspath(getattr(_sys, "executable", "")))
+        if exe_dir:
+            candidate = os.path.join(exe_dir, name)
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return name
 
     def is_managed(self) -> bool:
-        # Always usable as a fallback.
         return shutil.which(self.binary) is not None or os.path.exists(self.binary)
 
     def state(self) -> ServerState:
@@ -379,6 +403,15 @@ class DaemonController(ServiceController):
         return [self.binary, *extra]
 
     def start(self) -> bool:
+        # Check the binary exists before spawning — gives a clear error instead
+        # of an opaque "Failed to start" from a missing rd-server.
+        if not (shutil.which(self.binary) or os.path.exists(self.binary)):
+            self.last_error = (
+                f"rd-server binary not found: '{self.binary}' is neither on "
+                f"PATH nor next to this panel. Re-run the installer "
+                f"(install-server-linux.sh) or check your PATH."
+            )
+            return False
         cmd = self._cmd(
             "--daemon", "--pidfile", self.pidfile,
             "--host", self.cfg.host, "--port", str(self.cfg.port),
@@ -396,6 +429,12 @@ class DaemonController(ServiceController):
             # doesn't know.
             pass
         r = _run(cmd, timeout=10.0)
+        if r.returncode != 0:
+            self.last_error = (r.stderr or r.stdout or "").strip() or (
+                f"rd-server exited with code {r.returncode} (no error output)."
+            )
+        else:
+            self.last_error = None
         return r.returncode == 0
 
     def stop(self) -> bool:

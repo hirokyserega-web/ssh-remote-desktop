@@ -45,9 +45,7 @@ from server_gui.controller import (
 )
 
 TRAY_ICON_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAQElEQVR4nO3PMQEAIAzAMOKf"
-    "i6BJzMDgFwBIVEBEqwt4A0REJiJyAxFdARF9ARH9ARRAgIiICABATfQBRO8PMaP9WwAAAABJ"
-    "RU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAYklEQVR42mNgGGjAiC4gsLPxPz4NH9zrUfSwoGvmL9iGoUl0VRLD67B5EM7Oxv/IhjBhteXdZzgWXZUENwQbYCLkx9suE1FodMCCTVBAiJcosVEv0NMLr8Pm4fQCxUl54AEA0IU/xdWueP0AAAAASUVORK5CYII="
 )
 
 
@@ -364,7 +362,10 @@ class ServerGuiWindow(QMainWindow):
         if self._svc and self._svc.start():
             self.statusBar().showMessage(_tr("Сервер запущен"), 3000)
         else:
-            QMessageBox.warning(self, _tr("Ошибка"), _tr("Не удалось запустить сервер"))
+            err = getattr(self._svc, "last_error", None) if self._svc else None
+            detail = f"\n\n{err}" if err else ""
+            QMessageBox.warning(self, _tr("Ошибка"),
+                                _tr("Не удалось запустить сервер") + detail)
         self._refresh_status()
 
     def _on_stop(self) -> None:
