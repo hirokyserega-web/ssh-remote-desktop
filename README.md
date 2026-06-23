@@ -666,7 +666,7 @@ curl -fsSL https://raw.githubusercontent.com/hirokyserega-web/ssh-remote-desktop
 - **Под Wayland клиенту показывается placeholder-кадр:** портал `xdg-desktop-portal` (и соответствующий backend — `-wlr`/`-gnome`/`-kde`) не запущен. Запустите его и `pipewire`; проверьте логи сервера (`rd-server --status`, `journalctl -u ssh-remote-desktop.service`).
 - **«H.264 encoder init failed; falling back to JPEG»:** PyAV не установлен или ffmpeg без `libx264`. `pip install "ssh-remote-desktop[h264]"` и системный `ffmpeg`.
 - **`Permission denied (publickey)`:** публичный ключ клиента не в `~/.ssh/authorized_keys` пользователя на сервере, либо `allow_publickey = false` в `server.toml`.
-- **PAM-аутентификация не работает:** сервер должен запускаться под root (или через systemd-юнит с `User=root`), чтобы иметь доступ к PAM и понижать привилегии через `run_as_user`.
+- **PAM-аутентификация не работает:** во-первых, должен быть установлен `python-pam` (`pip install python-pam>=2.0.2`; включён в `requirements-linux.txt` и в пребилт-бинарь `rd-server`). Во-вторых, PAM читает `/etc/shadow`, поэтому сервер должен запускаться под **root** (или через systemd-юнит с `User=root`) — либо добавьте запускающего пользователя в группу `shadow`: `sudo usermod -aG shadow $USER`. При `allow_password = true` и отсутствии PAM сервер при старте пишет в лог явное ERROR — проверьте `journalctl -u ssh-remote-desktop.service`.
 - **`~/.local/bin` не в PATH:** `export PATH="$HOME/.local/bin:$PATH"` или откройте новый шелл.
 - **Полное удаление:** `curl -fsSL .../install.sh | bash -s -- --uninstall` (удаляет бинарь, venv, симлинки, пустой конфиг — но НЕ трогает ваши ключи и `known_hosts`).
 

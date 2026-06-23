@@ -16,4 +16,6 @@ python -m nuitka \
   --assume-yes-for-downloads \
   --output-dir=dist \
   --output-filename=rd-server \
+  --include-package=pam \
+  --include-module=pam \
   rd_server_entry.py

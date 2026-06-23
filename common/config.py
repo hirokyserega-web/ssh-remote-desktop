@@ -69,6 +69,11 @@ class ServerConfig:
     allow_password: bool = True
     allow_publickey: bool = True
     run_as_user: bool = True          # drop privileges to the target user
+    # PAM service name used by server/auth.check_password (default "login").
+    # Override to e.g. "sshd" / "system-auth" when your distro's PAM policy
+    # for "login" is too strict or missing. Has no effect when
+    # allow_password=false or python-pam is unavailable.
+    pam_service: str = "login"
 
     # Logging.
     log_level: str = "INFO"

@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Password authentication was always rejected: `python-pam` was not declared as
+  a dependency, so it never landed in the venv or the Nuitka `rd-server` binary,
+  leaving `server/auth.py` with `_HAVE_PAM=False` and `check_password()` always
+  returning `False`. Added `python-pam>=2.0.2` to `requirements-linux.txt`
+  (Linux-only — it ships no Windows/macOS wheels) and to the `server` /
+  `linux-full` optional-dependency groups in `pyproject.toml` (guarded with a
+  Linux env marker so `pip install ssh-remote-desktop[server]` still works
+  cross-platform). `build_server_linux.sh` now passes
+  `--include-package=pam --include-module=pam` to Nuitka so the dynamically
+  imported `pam` module is actually bundled into the prebuilt binary.
+- The PAM service name was hardcoded to `login`. Added a configurable
+  `pam_service` field to `ServerConfig` (default `login`) and threaded it
+  through `Broker.validate_password` → `check_password(service=...)`.
+- Missing PAM was only diagnosed on the first (opaque) rejected login. The
+  server now logs a clear ERROR at startup when `allow_password=true` and PAM
+  is unavailable, also hinting that PAM reads `/etc/shadow` and needs root or
+  the `shadow` group.
+
+### Added
+- `rd-server-gui` control panel is now actually built and shipped. Previously
+  the console script existed in `pyproject.toml` but no binary was produced:
+  added `rd_server_gui_entry.py` (Nuitka wrapper, mirroring
+  `rd_server_entry.py`) and `build_server_gui_linux.sh` (mirrors
+  `build_client_linux.sh` with the PySide6 plugin), wired the `server-gui`
+  component into the Linux release matrix, and taught `scripts/install.sh` to
+  download, verify, install and symlink `rd-server-gui` (component `server-gui`
+  → binary `rd-server-gui`), build it from source, and create its menu launcher
+  only when the binary is actually present (no dead menu entry).
+
 ## [1.4.8] - 2026-06-21
 
 ### Fixed

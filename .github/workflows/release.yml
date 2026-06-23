@@ -35,8 +35,8 @@ jobs:
           # GLIBC_2.38 and failed to start on older systems.
           - os: ubuntu-22.04
             label: linux
-            build: build_client_linux.sh build_server_linux.sh
-            components: client server
+            build: build_client_linux.sh build_server_linux.sh build_server_gui_linux.sh
+            components: client server server-gui
           # Windows: client only
           - os: windows-latest
             label: windows
