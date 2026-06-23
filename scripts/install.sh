@@ -429,6 +429,14 @@ setup_venv() {
   pip install --upgrade pip wheel setuptools
   log "Installing Python dependencies…"
   pip install -r "$TARGET_DIR/requirements.txt"
+  # Linux-only runtime deps (PAM/evdev/Wayland/D-Bus). requirements-linux.txt
+  # documents that "install.sh sources it on Linux hosts"; without python-pam
+  # (+ its undeclared `six` dep) the source-built/installed rd-server has no
+  # PAM and rejects every password. evdev/pywayland/dbus-next are lazily
+  # imported, so installing them does not change Nuitka's bundling.
+  if [[ "$OS" == "linux" ]]; then
+    pip install -r "$TARGET_DIR/requirements-linux.txt" || warn "Some Linux-only deps failed to install; server PAM/Wayland may be limited."
+  fi
   pip install -e "$TARGET_DIR"
 }
 
