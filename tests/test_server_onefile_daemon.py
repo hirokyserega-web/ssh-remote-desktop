@@ -15,11 +15,19 @@ import os
 import sys
 import textwrap
 
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from server.__main__ import _daemonize_onefile, _foreground_argv, build_parser
 from common.config import load_server_config
+
+# The onefile daemonization re-launches a foreground child with POSIX-only
+# start_new_session; rd-server itself (asyncssh SSH server + PAM) is Unix-only.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="onefile daemonization + SSH server are Unix-only",
+)
 
 
 def _write_stub_exe(path: str, *, fail: bool) -> None:

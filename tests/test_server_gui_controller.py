@@ -371,6 +371,10 @@ def _write_stub_server(path: str, *, fail: bool = False) -> None:
     os.chmod(path, 0o755)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="daemon foreground spawn uses POSIX shebang stub + start_new_session",
+)
 def test_daemon_controller_start_foreground_spawn_success(tmp_path):
     stub = str(tmp_path / "rd-server")
     _write_stub_server(stub, fail=False)
@@ -391,6 +395,10 @@ def test_daemon_controller_start_foreground_spawn_success(tmp_path):
         _sp.run(["pkill", "-f", stub], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="daemon foreground spawn uses POSIX shebang stub + start_new_session",
+)
 def test_daemon_controller_start_foreground_spawn_failure(tmp_path):
     stub = str(tmp_path / "rd-server")
     _write_stub_server(stub, fail=True)
