@@ -53,6 +53,22 @@ class PortInUseError(OSError):
             f"cannot bind {host}:{port}: {cause.strerror or cause} (errno {cause.errno})"
         )
 
+
+class HostKeyError(OSError):
+    """Raised when the host key could not be created.
+
+    Suggests fixes like running as root, checking the config directory, or
+    verifying permissions.
+    """
+
+    def __init__(self, path: str, cause: OSError):
+        self.path = path
+        self.original = cause
+        super().__init__(
+            f"cannot create host key at {path}: {cause.strerror or cause} (errno {cause.errno})"
+        )
+
+
 class _SSHServer(asyncssh.SSHServer if asyncssh else object):
     """Per-connection asyncssh server: decides auth and remembers the user."""
 
@@ -223,10 +239,13 @@ class Broker:
     def _ensure_host_key(self, path: str):
         if os.path.exists(path):
             return
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        key = asyncssh.generate_private_key("ssh-ed25519")
-        key.write_private_key(path)
-        log.info("generated SSH host key at %s", path)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            key = asyncssh.generate_private_key("ssh-ed25519")
+            key.write_private_key(path)
+            log.info("generated SSH host key at %s", path)
+        except OSError as exc:
+            raise HostKeyError(path, exc) from exc
 
     async def _reaper(self):
         timeout = self.cfg.idle_timeout

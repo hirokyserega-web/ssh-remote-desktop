@@ -31,16 +31,19 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from common.config import load_server_config
 
-from .auth import warn_if_pam_unavailable
-from .broker import Broker, PortInUseError
+from .auth import warn_if_pam_unavailable, warn_if_privileges_insufficient
+from .broker import Broker, HostKeyError, PortInUseError
 from .daemon import (
     daemonize,
+    default_log_file,
     default_pidfile,
     install_signal_handlers,
+    is_frozen_onefile,
     live_pid_from_pidfile,
     remove_pidfile,
     status,
@@ -367,6 +370,169 @@ def _port_in_use_hint(exc: PortInUseError) -> str:
         f"  Or pick a different port with: rd-server --port <PORT>"
     )
 
+
+def _host_key_hint(exc: "HostKeyError") -> str:
+    """A one-line, actionable message for a host-key creation failure.
+
+    Replaces the bare ``OSError`` traceback the user used to see when the
+    config dir (~/.config/ssh-remote-desktop) couldn't be created — usually a
+    permissions issue (read-only HOME, no write rights, non-root user lacking
+    access to the chosen host_key path).
+    """
+    return (
+        f"rd-server: cannot create the SSH host key at {exc.path} "
+        f"({exc.original.strerror or exc.original}).\n"
+        f"  The config directory must be writable. Fix:\n"
+        f"    - run as a user with write access to the host_key path, or as root;\n"
+        f"    - point --host-key at a writable location, e.g.\n"
+        f"        rd-server --host-key ~/.config/ssh-remote-desktop/host_ed25519\n"
+        f"    - create the dir first: mkdir -p ~/.config/ssh-remote-desktop"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Frozen-onefile daemonization
+# --------------------------------------------------------------------------- #
+def _onefile_executable() -> str:
+    """Path to re-launch so a fresh foreground child is a standalone process.
+
+    Under a Nuitka onefile, ``sys.executable`` is the *already-extracted*
+    program; re-launching it would share the spawner's extraction dir, which the
+    spawner tears down on exit — re-introducing the very bootstrap race we are
+    avoiding. ``sys.argv[0]`` is the onefile binary itself, so a child launched
+    from it re-extracts into its own temp dir whose lifetime is the child's
+    own. That is the robust choice for a detached daemon.
+    """
+    if getattr(sys, "argv", None) and sys.argv and sys.argv[0]:
+        return sys.argv[0]
+    return sys.executable
+
+
+def _foreground_argv(args, *, pidfile: str) -> list[str]:
+    """Rebuild the argv needed to run the server in the foreground.
+
+    Mirrors the override fields parsed by :func:`build_parser` so a daemon
+    request (``--daemon``) becomes a foreground request (``--foreground``) with
+    the same effective configuration. ``--log-file`` is deliberately omitted:
+    the spawner redirects the child's stderr to the log file itself, so an
+    additional ``FileHandler`` would duplicate every log line.
+    """
+    cmd = ["--foreground", "--pidfile", pidfile]
+    if args.config:
+        cmd += ["--config", args.config]
+    if args.host:
+        cmd += ["--host", args.host]
+    if args.port is not None:
+        cmd += ["--port", str(args.port)]
+    if args.backend:
+        cmd += ["--backend", args.backend]
+    if args.host_key:
+        cmd += ["--host-key", args.host_key]
+    if args.max_sessions is not None:
+        cmd += ["--max-sessions", str(args.max_sessions)]
+    if args.idle_timeout is not None:
+        cmd += ["--idle-timeout", str(args.idle_timeout)]
+    if args.codec:
+        cmd += ["--codec", args.codec]
+    if args.fps is not None:
+        cmd += ["--fps", str(args.fps)]
+    if args.shared_dir:
+        cmd += ["--shared-dir", args.shared_dir]
+    if args.clipboard_enabled is False:
+        cmd += ["--no-clipboard"]
+    if args.files_enabled is False:
+        cmd += ["--no-files"]
+    if args.log_level:
+        cmd += ["--log-level", args.log_level]
+    return cmd
+
+
+def _tail_file(path: str, n: int = 40) -> str:
+    """Return the last ``n`` lines of ``path`` (or '' if unreadable)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return "".join(fh.readlines()[-n:])
+    except OSError:
+        return ""
+
+
+def _daemonize_onefile(args, cfg, pidfile: str) -> int:
+    """Daemonize a frozen onefile binary by launching a foreground child.
+
+    The in-process double-fork (:func:`server.daemon.daemonize`) breaks a
+    Nuitka onefile: the first fork's parent ``os._exit``s, the onefile
+    bootstrap tears down the temp-extraction dir, and the daemon grandchild
+    dies — with stdio already redirected to the log file, so the failure is
+    invisible (the operator sees only "Остановлен").
+
+    Instead we spawn a fresh ``--foreground`` process of ourselves in a new
+    session (``start_new_session=True``), redirect its stdout/stderr to the log
+    file, and let *it* write the pidfile once the listener is up. We — the
+    spawner — stay just long enough (a grace window) to detect an early crash
+    (missing module, port in use, perms) so the caller gets a non-zero exit and
+    the stderr cause instead of silent success.
+    """
+    log_file = os.path.expanduser(cfg.log_file) if cfg.log_file else default_log_file()
+    log_dir = os.path.dirname(os.path.abspath(log_file))
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except OSError as exc:
+        print(f"rd-server: cannot create log dir {log_dir}: {exc}", file=sys.stderr)
+        remove_pidfile(pidfile)
+        return 1
+    try:
+        log_fh = open(log_file, "ab", buffering=0)
+    except OSError as exc:
+        print(f"rd-server: cannot open log file {log_file}: {exc}", file=sys.stderr)
+        remove_pidfile(pidfile)
+        return 1
+
+    exe = _onefile_executable()
+    cmd = [exe, *_foreground_argv(args, pidfile=pidfile)]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError as exc:
+        log_fh.close()
+        print(f"rd-server: cannot launch daemon child {exe!r}: {exc}", file=sys.stderr)
+        remove_pidfile(pidfile)
+        return 1
+
+    # Grace window: an early exit (import error, port in use, perms) almost
+    # always happens within the first couple of seconds. If the child is still
+    # alive AND has written the pidfile, the listener is up → success. We read
+    # the child's stderr back from the log file so the cause is surfaced.
+    grace = 4.0
+    deadline = time.monotonic() + grace
+    result = 0
+    while time.monotonic() < deadline:
+        rc = proc.poll()
+        if rc is not None:
+            tail = _tail_file(log_file, 40).strip()
+            print(
+                f"rd-server: daemon child exited early (code {rc}).\n{tail}",
+                file=sys.stderr,
+            )
+            remove_pidfile(pidfile)
+            result = 1
+            break
+        if os.path.exists(pidfile):
+            break  # listener up, pidfile written by the child
+        time.sleep(0.1)
+    # Closing the parent's fd object is safe: the child inherited its own dup.
+    log_fh.close()
+    if result == 0:
+        print(f"rd-server: daemon started (pid {proc.pid}, log {log_file})",
+              file=sys.stderr)
+    return result
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -405,6 +571,9 @@ def main(argv=None) -> int:
     # operator sees the real cause before any client tries to connect.
     warn_if_pam_unavailable(allow_password=cfg.allow_password,
                             pam_service=cfg.pam_service)
+    warn_if_privileges_insufficient(allow_password=cfg.allow_password,
+                                    run_as_user=cfg.run_as_user,
+                                    pam_service=cfg.pam_service)
 
     if args.daemon:
         existing = live_pid_from_pidfile(pidfile)
@@ -412,6 +581,15 @@ def main(argv=None) -> int:
             print(f"rd-server already running (pid {existing}); use --stop first.",
                   file=sys.stderr)
             return 1
+        # Frozen Nuitka/PyInstaller onefile: the in-process double-fork below
+        # breaks the onefile bootstrap (the parent's os._exit tears down the
+        # temp extraction, killing the daemon grandchild whose stdio is already
+        # redirected — so the death is silent). Re-launch a foreground child in
+        # a new session instead; it keeps its own extraction alive and writes
+        # the pidfile itself, while we surface any early crash to the caller.
+        if is_frozen_onefile():
+            return _daemonize_onefile(args, cfg, pidfile)
+        # Non-frozen (venv / `python -m server`): classic double-fork is safe.
         # Daemonize BEFORE configuring logging — the double-fork rebinds
         # stdio, so logging.basicConfig below will attach handlers to the
         # new stderr (which points at the log file or /dev/null).
@@ -423,6 +601,9 @@ def main(argv=None) -> int:
             return asyncio.run(_run_broker(cfg, pidfile))
         except PortInUseError as exc:
             print(_port_in_use_hint(exc), file=sys.stderr)
+            return 1
+        except HostKeyError as exc:
+            print(_host_key_hint(exc), file=sys.stderr)
             return 1
         finally:
             remove_pidfile(pidfile)
@@ -441,6 +622,9 @@ def main(argv=None) -> int:
         return asyncio.run(_run_broker(cfg, pidfile if args.pidfile else None))
     except PortInUseError as exc:
         print(_port_in_use_hint(exc), file=sys.stderr)
+        return 1
+    except HostKeyError as exc:
+        print(_host_key_hint(exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\nshutting down", file=sys.stderr)

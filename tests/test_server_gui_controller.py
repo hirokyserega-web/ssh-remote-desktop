@@ -332,3 +332,122 @@ def test_gui_prefs_to_dict_excludes_private_path():
     p = GuiPrefs(_path="/secret")
     d = p.to_dict()
     assert "_path" not in d
+
+
+# --------------------------------------------------------------------------- #
+# DaemonController.start — foreground-spawn (onefile-safe) path
+# --------------------------------------------------------------------------- #
+def _write_stub_server(path: str, *, fail: bool = False) -> None:
+    """Write a tiny stub that mimics `rd-server --foreground --pidfile P ...`.
+
+    Success mode: writes the pidfile with its own pid then sleeps (keeps the
+    listener 'up' so the controller's grace window sees the pidfile). Failure
+    mode: prints a diagnostic to stderr and exits 1 immediately, so the
+    controller's early-exit detection surfaces last_error.
+    """
+    import sys
+    import textwrap
+    fail_flag = "True" if fail else "False"
+    code = "#!" + sys.executable + "\n" + textwrap.dedent(
+        """
+        import json, os, sys, time
+        pidfile = None
+        for i, a in enumerate(sys.argv):
+            if a == "--pidfile" and i + 1 < len(sys.argv):
+                pidfile = sys.argv[i + 1]
+        if __FAIL__:
+            sys.stderr.write("STUB: cannot bind port 2222: address already in use\\n")
+            sys.stderr.flush()
+            sys.exit(1)
+        if pidfile:
+            os.makedirs(os.path.dirname(os.path.abspath(pidfile)) or ".", exist_ok=True)
+            with open(pidfile, "w") as f:
+                json.dump({"pid": os.getpid(), "port": 2222, "host": "0.0.0.0"}, f)
+        time.sleep(30)
+        """
+    ).replace("__FAIL__", fail_flag)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(code)
+    os.chmod(path, 0o755)
+
+
+def test_daemon_controller_start_foreground_spawn_success(tmp_path):
+    stub = str(tmp_path / "rd-server")
+    _write_stub_server(stub, fail=False)
+    pidfile = str(tmp_path / "run.pid")
+    c = ServerGuiConfig()
+    # log_file must be writable so the controller can capture child stderr.
+    c.log_file = str(tmp_path / "rd.log")
+    ctl = ctrl.DaemonController(c, binary=stub, pidfile=pidfile)
+    try:
+        ok = ctl.start()
+        assert ok is True
+        assert ctl.last_error is None
+        # The child wrote the pidfile once its (stub) listener came up.
+        assert os.path.exists(pidfile)
+    finally:
+        # Clean up the stub child we spawned.
+        import subprocess as _sp
+        _sp.run(["pkill", "-f", stub], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+
+
+def test_daemon_controller_start_foreground_spawn_failure(tmp_path):
+    stub = str(tmp_path / "rd-server")
+    _write_stub_server(stub, fail=True)
+    pidfile = str(tmp_path / "run.pid")
+    c = ServerGuiConfig()
+    c.log_file = str(tmp_path / "rd.log")
+    ctl = ctrl.DaemonController(c, binary=stub, pidfile=pidfile)
+    ok = ctl.start()
+    assert ok is False
+    # The early-exit cause (from the child's stderr, captured into the log)
+    # must be surfaced — not silent "Остановлен".
+    assert ctl.last_error is not None
+    assert "address already in use" in ctl.last_error or "exited" in ctl.last_error
+    assert not os.path.exists(pidfile)  # failed start cleans the pidfile
+
+
+def test_daemon_controller_start_missing_binary(tmp_path):
+    c = ServerGuiConfig()
+    pidfile = str(tmp_path / "run.pid")
+    ctl = ctrl.DaemonController(c, binary=str(tmp_path / "no-such-binary"),
+                                pidfile=pidfile)
+    ok = ctl.start()
+    assert ok is False
+    assert ctl.last_error is not None
+    assert "not found" in ctl.last_error.lower() or "no such" in ctl.last_error.lower()
+
+
+# --------------------------------------------------------------------------- #
+# privilege_warning — TASK 4 banner source
+# --------------------------------------------------------------------------- #
+def test_privilege_warning_none_when_root(monkeypatch):
+    # As root, no warning regardless of auth toggles.
+    monkeypatch.setattr(ctrl.os, "geteuid", lambda: 0, raising=False)
+    c = ServerGuiConfig(allow_password=True, run_as_user=True)
+    assert ctrl.privilege_warning(c) is None
+
+
+def test_privilege_warning_when_unprivileged_and_password_on(monkeypatch):
+    monkeypatch.setattr(ctrl.os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(ctrl.os, "getgroups", lambda: [1000], raising=False)
+    c = ServerGuiConfig(allow_password=True, run_as_user=False)
+    w = ctrl.privilege_warning(c)
+    assert w is not None
+    assert "root" in w.lower()
+    assert "shadow" in w.lower()
+
+
+def test_privilege_warning_when_unprivileged_and_run_as_user(monkeypatch):
+    monkeypatch.setattr(ctrl.os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(ctrl.os, "getgroups", lambda: [1000], raising=False)
+    c = ServerGuiConfig(allow_password=False, run_as_user=True)
+    w = ctrl.privilege_warning(c)
+    assert w is not None
+    assert "root" in w.lower()
+
+
+def test_privilege_warning_none_when_auth_disabled(monkeypatch):
+    monkeypatch.setattr(ctrl.os, "geteuid", lambda: 1000, raising=False)
+    c = ServerGuiConfig(allow_password=False, run_as_user=False)
+    assert ctrl.privilege_warning(c) is None

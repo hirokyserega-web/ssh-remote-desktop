@@ -366,6 +366,50 @@ use_uinput = true               # эмуляция ввода через /dev/ui
 
 </details>
 
+## Запуск сервера: привилегии (root vs пользователь)
+
+Сервер может работать в двух режимах привилегий, и выбор определяется тем, **какие функции аутентификации включены**:
+
+| Функция | Требует | Почему |
+|---|---|---|
+| `allow_password=true` (PAM) | **root** или группа `shadow` | `python-pam` читает `/etc/shadow` |
+| `run_as_user=true` (drop-privileges) | **root** | сессии понижают привилегии через `setuid` |
+| только `allow_publickey=true` | обычный пользователь | достаточно прав на `~/.ssh/authorized_keys` |
+
+**По умолчанию** `allow_password=true` и `run_as_user=true` — поэтому серверу нужен root. При старте без root и включённых пароле/`run_as_user` сервер печатает предупреждение (лог + панель `rd-server-gui`), а не падает, но **все входы по паролю будут молча отвергнуты**, а сессии не смогут понизить привилегии — это выглядит как «сервер не работает».
+
+### Рекомендованные варианты запуска
+
+**1. systemd-юнит (рекомендуется для сервера):**
+```bash
+sudo rd-server --install-service --config /etc/ssh-remote-desktop/server.toml
+# юнит стартует под User=root: PAM и setuid доступны, логи — в journald
+```
+Панель `rd-server-gui` в systemd-режиме выполняет `Старт`/`Стоп` через `pkexec`/`sudo systemctl`, если сама запущена не от root.
+
+**2. Запуск вручную под root:**
+```bash
+sudo rd-server --foreground --config /etc/ssh-remote-desktop/server.toml
+# или демон:
+sudo rd-server --daemon --log-file /var/log/rd-server.log
+```
+
+**3. Только парольная аутентификация без root** — добавьте пользователя в группу `shadow`:
+```bash
+sudo usermod -aG shadow "$USER"
+# затем (после перелогина) rd-server может проверять пароли через PAM
+```
+
+**4. Безпарольный сервер (публичные ключи)** — отключите пароль и drop-privileges:
+```toml
+# server.toml
+allow_password = false
+run_as_user = false
+```
+Так сервер стартует обычным пользователем без повышения привилегий; аутентификация — только по публичному ключу из `~/.ssh/authorized_keys`.
+
+> **Демон под Nuitka onefile.** Пребилт-бинарь `rd-server` собран как Nuitka onefile. Внутри замороженного бинаря классический double-fork (`--daemon`) небезопасен: родительский процесс сносит распаковку onefile, и демон-внук погибает молча (stdio уже перенаправлен). Поэтому в замороженном бинаре `--daemon` реализован через перезапуск самого себя в foreground как отслеживаемого фонового процесса (`start_new_session=True`, stdout/stderr → лог-файл), а pidfile пишет дочерний процесс. Графическая панель в демон-режиме делает то же самое: запускает `rd-server --foreground` через `Popen` и показывает stderr дочернего при неудаче. При запуске из исходников/venv (не заморожено) используется обычный double-fork.
+
 ## Запуск клиента
 
 <details>
