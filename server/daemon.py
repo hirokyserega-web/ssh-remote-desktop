@@ -23,6 +23,30 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+def is_frozen_onefile() -> bool:
+    """True when running inside a Nuitka/PyInstaller frozen binary.
+
+    In a frozen onefile the classic in-process double-fork (:func:`daemonize`)
+    is unsafe: the first fork's parent calls ``os._exit``, which lets the
+    onefile bootstrap tear down the temp-extraction dir, killing the daemon
+    grandchild — and because stdio has already been rebound to the log file the
+    death is silent. Callers that want daemon behaviour under a frozen binary
+    must instead re-launch a foreground child (see ``server.__main__``) so the
+    onefile extraction stays alive for the child's lifetime.
+
+    Detection covers both packagers we ship: Nuitka (injects ``__compiled__``
+    into the main module) and PyInstaller (sets ``sys.frozen``).
+    """
+    if os.environ.get("RD_SERVER_FORCE_FROZEN") == "1":
+        return True
+    if getattr(sys, "frozen", False):
+        return True
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None and getattr(main_mod, "__compiled__", None) is not None:
+        return True
+    return False
+
+
 def default_pidfile() -> str:
     """Default pidfile path: ``/run/...`` under root, XDG config otherwise.
 
@@ -32,6 +56,19 @@ def default_pidfile() -> str:
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return "/run/ssh-remote-desktop.pid"
     return os.path.expanduser("~/.config/ssh-remote-desktop/rd-server.pid")
+
+
+def default_log_file() -> str:
+    """Default daemon log path, kept next to the pidfile in the config dir.
+
+    Used when the operator hasn't set ``log_file`` but needs daemon output to
+    go somewhere survivable (a foreground child's stderr is redirected here by
+    the onefile daemonizer / the GUI controller so start failures are visible
+    instead of vanishing into /dev/null).
+    """
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return "/var/log/ssh-remote-desktop/rd-server.log"
+    return os.path.expanduser("~/.config/ssh-remote-desktop/rd-server.log")
 
 
 def is_pid_alive(pid: int) -> bool:
@@ -81,6 +118,52 @@ def _is_pid_alive_win32(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
+def _proc_comm(pid: int) -> Optional[str]:
+    """Best-effort read of ``/proc/<pid>/comm`` (Linux). None if unavailable.
+
+    Used by :func:`is_likely_rd_server` to distinguish a real rd-server from a
+    process that merely inherited a recycled PID. ``comm`` is truncated to 15
+    chars by the kernel — enough to spot ``rd-server`` / ``rd-server.bin`` — so
+    we don't need the longer ``cmdline`` for the common case.
+    """
+    try:
+        with open(f"/proc/{pid}/comm", "rb") as fh:
+            return fh.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+
+
+def is_likely_rd_server(pid: int) -> bool:
+    """Return True if ``pid`` plausibly belongs to an rd-server process.
+
+    Stale-pidfile detection: a recorded PID can be reused by an unrelated
+    process after the real rd-server dies, so "the PID is alive" is not enough
+    to claim "rd-server is already running". This checks ``/proc/<pid>/comm``:
+
+    * ``rd-server`` / ``rd-server.bin`` (Nuitka onefile extracted) → confirmed.
+    * a ``python`` / ``python3.x`` interpreter → dev mode (``python -m
+      server``); trust it so the dev workflow and the pytest suite (which use
+      the pytest/python PID) keep working.
+    * any other live process (``nginx``, ``sshd``, …) → a recycled PID; the
+      pidfile is stale.
+    * ``/proc`` unavailable (non-Linux / restricted) → cannot verify, trust
+      liveness alone rather than risk a false "already running".
+
+    Only the clearly-non-rd-server, non-python case returns False, which is
+    exactly the PID-reuse trap we want to clear.
+    """
+    if pid <= 0:
+        return False
+    comm = _proc_comm(pid)
+    if comm is None:
+        return True  # /proc unavailable → can't verify → trust liveness
+    if "rd-server" in comm:
+        return True
+    if comm.startswith("python"):
+        return True
+    return False
+
+
 def read_pidfile(path: str) -> Optional[dict]:
     """Read the pidfile and return its parsed dict, or ``None`` if missing /
     unreadable / malformed. Never raises. The caller decides what "stale"
@@ -126,17 +209,24 @@ def remove_pidfile(path: str) -> None:
 def live_pid_from_pidfile(path: str) -> Optional[int]:
     """Return the pid recorded in ``path`` if that pid is alive, else ``None``.
 
-    If the file exists but its pid is dead, the pidfile is considered stale and
-    is removed so a fresh daemon can start.
+    If the file exists but its pid is dead — OR alive but clearly NOT an
+    rd-server process (PID was recycled by an unrelated daemon) — the pidfile
+    is considered stale and is removed so a fresh daemon can start. See
+    :func:`is_likely_rd_server` for the reuse-detection heuristic.
     """
     data = read_pidfile(path)
     if not data:
         return None
     pid = data["pid"]
-    if is_pid_alive(pid):
-        return pid
-    remove_pidfile(path)
-    return None
+    if not is_pid_alive(pid):
+        remove_pidfile(path)
+        return None
+    if not is_likely_rd_server(pid):
+        # Alive, but not rd-server (and not a python dev process) → the PID was
+        # reused after the real rd-server died. The pidfile is stale.
+        remove_pidfile(path)
+        return None
+    return pid
 
 
 def daemonize(log_file: Optional[str] = None) -> None:
@@ -247,7 +337,9 @@ def status(pidfile: str) -> DaemonStatus:
     if not data:
         return DaemonStatus(state="stopped")
     pid = data["pid"]
-    if not is_pid_alive(pid):
+    if not is_pid_alive(pid) or not is_likely_rd_server(pid):
+        # Dead, or alive-but-recycled (PID reuse): the pidfile no longer
+        # describes a real rd-server, so clear it and report stopped.
         remove_pidfile(pidfile)
         return DaemonStatus(state="stopped")
     return DaemonStatus(

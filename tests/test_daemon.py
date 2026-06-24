@@ -232,3 +232,79 @@ def test_daemonize_nofork_escape_hatch(tmp_path, monkeypatch):
             os.close(fd)
     assert "daemon-test-marker" in (tmp_path / "daemon.log").read_text(
         encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# is_frozen_onefile / default_log_file
+# --------------------------------------------------------------------------- #
+def test_is_frozen_onefile_false_in_dev():
+    # Running under a plain CPython interpreter (pytest) is NOT frozen.
+    assert daemon.is_frozen_onefile() is False
+
+
+def test_default_log_file_next_to_pidfile():
+    # Non-root: log lives in the XDG config dir alongside the pidfile.
+    import os as _os
+    if hasattr(_os, "geteuid") and _os.geteuid() == 0:
+        assert daemon.default_log_file() == "/var/log/ssh-remote-desktop/rd-server.log"
+    else:
+        assert daemon.default_log_file().endswith(
+            ".config/ssh-remote-desktop/rd-server.log")
+
+
+# --------------------------------------------------------------------------- #
+# is_likely_rd_server — stale-pidfile / PID-reuse hardening
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(sys.platform == "win32", reason="reused-PID check is Linux/proc")
+def test_is_likely_rd_server_rejects_unrelated_process():
+    """A live but unrelated process (e.g. `sleep`) must NOT be mistaken for
+    rd-server — that's the PID-reuse case a stale pidfile points at."""
+    import subprocess as _sp
+    proc = _sp.Popen(["sleep", "30"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    try:
+        # Give the kernel a moment to populate /proc/<pid>/comm.
+        time.sleep(0.1)
+        assert daemon.is_likely_rd_server(proc.pid) is False
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_live_pid_removes_reused_pid(tmp_path):
+    """A pidfile whose pid is alive but is NOT rd-server is stale: remove it
+    and report not-running, instead of refusing to start with 'already
+    running'."""
+    import subprocess as _sp
+    # `sleep` is neither rd-server nor a python interpreter → treated as a
+    # recycled PID. (Skip on Windows: no /proc, no `sleep`.)
+    if sys.platform == "win32":
+        pytest.skip("Linux/proc only")
+    proc = _sp.Popen(["sleep", "30"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    try:
+        time.sleep(0.1)
+        p = str(tmp_path / "reused.pid")
+        daemon.write_pidfile(p, proc.pid, port=2222, host="0.0.0.0")
+        assert daemon.live_pid_from_pidfile(p) is None
+        assert not os.path.exists(p)  # stale pidfile cleaned up
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_status_stopped_when_reused_pid_removes_file(tmp_path):
+    """status() must clear a pidfile pointing at a recycled (non-rd-server)
+    pid and report stopped, mirroring live_pid_from_pidfile."""
+    if sys.platform == "win32":
+        pytest.skip("Linux/proc only")
+    import subprocess as _sp
+    proc = _sp.Popen(["sleep", "30"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    try:
+        time.sleep(0.1)
+        p = str(tmp_path / "reused2.pid")
+        daemon.write_pidfile(p, proc.pid, port=5, host="h")
+        s = daemon.status(p)
+        assert s.state == "stopped"
+        assert not os.path.exists(p)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)

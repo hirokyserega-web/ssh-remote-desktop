@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Optional
@@ -38,7 +39,9 @@ except ModuleNotFoundError:  # pragma: no cover
 
 # Reuse the daemon helpers (pidfile format, status, stop).
 from server.daemon import (
+    default_log_file,
     default_pidfile,
+    remove_pidfile,
     status as daemon_status,
     stop as daemon_stop,
 )
@@ -265,8 +268,61 @@ def unit_installed() -> bool:
     return os.path.exists(SYSTEMD_UNIT_PATH)
 
 
-def _systemctl(*args: str) -> subprocess.CompletedProcess:
+def _euid() -> int:
+    try:
+        return os.geteuid()
+    except AttributeError:
+        return -1
+
+
+def _escalate_prefix() -> list[str]:
+    """Command prefix (pkexec/sudo) for privileged actions when not root.
+
+    Prefer ``pkexec`` — it pops a graphical PolicyKit prompt, the right UX for
+    a control panel. Fall back to ``sudo`` (terminal prompt), and to an empty
+    list when neither is available (the systemctl call then fails with a clear
+    permission error rather than a confusing crash).
+    """
+    if _euid() == 0:
+        return []
+    if shutil.which("pkexec"):
+        return ["pkexec"]
+    if shutil.which("sudo"):
+        return ["sudo"]
+    return []
+
+
+def _systemctl(*args: str, escalate: bool = False) -> subprocess.CompletedProcess:
+    if escalate and _euid() != 0:
+        prefix = _escalate_prefix()
+        # 60s lets the operator clear the pkexec/sudo auth prompt.
+        return _run([*prefix, "systemctl", *args], timeout=60.0)
     return _run(["systemctl", *args])
+
+
+def privilege_warning(cfg: ServerGuiConfig) -> Optional[str]:
+    """Return a warning string when the config needs root but lacks it, else None.
+
+    ``allow_password`` routes logins through PAM (reads /etc/shadow) and
+    ``run_as_user`` drops privileges via setuid; both need root. The panel
+    surfaces this as a banner so the operator starts with the right privileges
+    instead of seeing every login silently rejected.
+    """
+    if not (cfg.allow_password or cfg.run_as_user):
+        return None
+    if _euid() == 0:
+        return None
+    reasons = []
+    if cfg.allow_password:
+        reasons.append("парольной аутентификации (PAM читает /etc/shadow)")
+    if cfg.run_as_user:
+        reasons.append("запуска сессий от имени пользователя (setuid)")
+    return (
+        "Включены " + " и ".join(reasons) + ", для чего нужен root. "
+        "Запустите сервер через systemd-юнит (User=root) либо `sudo rd-server`, "
+        "добавьте пользователя в группу shadow (для паролей) или отключите эти "
+        "опции — иначе входы и сессии будут молча отклоняться."
+    )
 
 
 class ServiceController:
@@ -331,18 +387,18 @@ class SystemdController(ServiceController):
         return st
 
     def start(self) -> bool:
-        return _systemctl("start", UNIT_NAME).returncode == 0
+        return _systemctl("start", UNIT_NAME, escalate=True).returncode == 0
 
     def stop(self) -> bool:
-        return _systemctl("stop", UNIT_NAME).returncode == 0
+        return _systemctl("stop", UNIT_NAME, escalate=True).returncode == 0
 
     def restart(self) -> bool:
-        return _systemctl("restart", UNIT_NAME).returncode == 0
+        return _systemctl("restart", UNIT_NAME, escalate=True).returncode == 0
 
     def enable_autostart(self, on: bool) -> bool:
         if on:
-            return _systemctl("enable", UNIT_NAME).returncode == 0
-        return _systemctl("disable", UNIT_NAME).returncode == 0
+            return _systemctl("enable", UNIT_NAME, escalate=True).returncode == 0
+        return _systemctl("disable", UNIT_NAME, escalate=True).returncode == 0
 
 
 class DaemonController(ServiceController):
@@ -402,6 +458,47 @@ class DaemonController(ServiceController):
     def _cmd(self, *extra: str) -> list[str]:
         return [self.binary, *extra]
 
+    def _resolve_log_file(self) -> str:
+        """Where the spawned server's stdout/stderr go.
+
+        Prefer the operator's ``log_file``; otherwise keep the log next to the
+        pidfile (``~/.config/ssh-remote-desktop/rd-server.log`` or
+        ``/var/log/...`` under root) so a failed start always leaves a trace
+        instead of vanishing into /dev/null.
+        """
+        if self.cfg.log_file:
+            return os.path.expanduser(self.cfg.log_file)
+        return default_log_file()
+
+    def _build_foreground_cmd(self, log_file: str) -> list[str]:
+        """Build a ``--foreground`` command for the server.
+
+        We deliberately do NOT use ``rd-server --daemon`` here: the in-process
+        double-fork breaks a Nuitka onefile (the bootstrap tears down its temp
+        extraction when the fork's parent ``os._exit``s, killing the daemon
+        grandchild whose stdio is already redirected — so the failure is
+        silent). Instead we run ``--foreground`` ourselves in a new session and
+        redirect its output to ``log_file``; that keeps the onefile extraction
+        alive for the child's whole lifetime and lets us read the child's stderr
+        back to explain a failed start.
+
+        ``--log-file`` is intentionally NOT passed: we redirect the child's
+        stderr to ``log_file`` ourselves, so a second ``FileHandler`` would
+        duplicate every line.
+        """
+        cmd = [
+            self.binary, "--foreground", "--pidfile", self.pidfile,
+            "--host", self.cfg.host, "--port", str(self.cfg.port),
+            "--backend", self.cfg.backend, "--codec", self.cfg.codec,
+            "--max-sessions", str(self.cfg.max_sessions),
+            "--idle-timeout", str(self.cfg.idle_timeout),
+            "--shared-dir", self.cfg.shared_dir,
+            "--fps", str(self.cfg.fps),
+        ]
+        if self.cfg.log_level:
+            cmd += ["--log-level", self.cfg.log_level]
+        return cmd
+
     def start(self) -> bool:
         # Check the binary exists before spawning — gives a clear error instead
         # of an opaque "Failed to start" from a missing rd-server.
@@ -412,30 +509,66 @@ class DaemonController(ServiceController):
                 f"(install-server-linux.sh) or check your PATH."
             )
             return False
-        cmd = self._cmd(
-            "--daemon", "--pidfile", self.pidfile,
-            "--host", self.cfg.host, "--port", str(self.cfg.port),
-            "--backend", self.cfg.backend, "--codec", self.cfg.codec,
-            "--max-sessions", str(self.cfg.max_sessions),
-            "--idle-timeout", str(self.cfg.idle_timeout),
-            "--shared-dir", self.cfg.shared_dir,
-            "--fps", str(self.cfg.fps),
-        )
-        if self.cfg.log_file:
-            cmd += ["--log-file", self.cfg.log_file]
-        if not self.cfg.allow_password:
-            # The CLI only has --no-clipboard/--no-files; password toggle is
-            # config-file only. Skip rather than emit a flag the parser
-            # doesn't know.
-            pass
-        r = _run(cmd, timeout=10.0)
-        if r.returncode != 0:
-            self.last_error = (r.stderr or r.stdout or "").strip() or (
-                f"rd-server exited with code {r.returncode} (no error output)."
+
+        # A stale pidfile pointing at a live-but-unrelated PID would make the
+        # child bail with "already running"; clear it first so a fresh start
+        # isn't blocked by a recycled PID from a previous, unrelated process.
+        remove_pidfile(self.pidfile)
+
+        log_file = self._resolve_log_file()
+        log_dir = os.path.dirname(os.path.abspath(log_file))
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            log_fh = open(log_file, "ab", buffering=0)
+        except OSError as exc:
+            self.last_error = f"cannot open server log {log_file}: {exc}"
+            return False
+
+        cmd = self._build_foreground_cmd(log_file)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                start_new_session=True,   # detach: survives the GUI closing
+                close_fds=True,
             )
-        else:
-            self.last_error = None
-        return r.returncode == 0
+        except OSError as exc:
+            log_fh.close()
+            self.last_error = f"cannot launch rd-server: {exc}"
+            return False
+
+        # Grace window: an early crash (missing module, port in use, perms)
+        # almost always happens within the first few seconds. If the child is
+        # still alive AND has written the pidfile, the listener is up. We read
+        # the child's stderr back from the log so a failed start is explained
+        # in the panel instead of shown as a bare "Остановлен".
+        grace = 4.0
+        deadline = time.monotonic() + grace
+        ok = False
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                tail = tail_log(log_file, n=40).strip()
+                self.last_error = tail or (
+                    f"rd-server exited with code {proc.returncode} "
+                    f"(no error output)."
+                )
+                remove_pidfile(self.pidfile)
+                log_fh.close()
+                return False
+            if os.path.exists(self.pidfile):
+                ok = True
+                break
+            time.sleep(0.1)
+        # Closing the parent's fd object is safe: the child inherited its own
+        # dup via stdout/stderr, so it keeps writing to the log after we exit.
+        log_fh.close()
+        self.last_error = None if ok else (
+            f"rd-server launched (pid {proc.pid}) but did not write its pidfile "
+            f"within {grace:.0f}s — check {log_file}."
+        )
+        return ok
 
     def stop(self) -> bool:
         return daemon_stop(self.pidfile)

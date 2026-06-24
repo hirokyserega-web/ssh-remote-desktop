@@ -114,6 +114,59 @@ def warn_if_pam_unavailable(*, allow_password: bool, pam_service: str = "login")
     )
 
 
+def warn_if_privileges_insufficient(
+    *, allow_password: bool, run_as_user: bool, pam_service: str = "login",
+) -> None:
+    """Warn when password auth / user-session drop are on but we lack root.
+
+    ``allow_password=True`` routes logins through PAM, which reads
+    ``/etc/shadow``; ``run_as_user=True`` drops privileges to each target user
+    via ``setuid``. Both need root (or membership in the ``shadow`` group for
+    the password path). Starting without those privileges doesn't crash — the
+    server comes up — but every password login is silently rejected and no
+    per-user session can be demoted, which looks like "the server doesn't
+    work". Surface the cause loudly at startup so the operator fixes the
+    launch context rather than chasing client-side errors.
+    """
+    if not (allow_password or run_as_user):
+        return
+    # Only meaningful on POSIX (the server is Linux-only anyway).
+    if not hasattr(os, "geteuid"):
+        return
+    if os.geteuid() == 0:
+        return  # root: PAM + setuid both available.
+    # Non-root: is the 'shadow' group an option for the password path?
+    in_shadow = False
+    try:
+        import grp
+        groups = [g for g in os.getgroups()]
+        try:
+            shadow_gid = grp.getgrnam("shadow").gr_gid
+            in_shadow = shadow_gid in groups
+        except KeyError:
+            pass
+    except (ImportError, OSError):  # pragma: no cover
+        pass
+    if in_shadow and not run_as_user:
+        return  # shadow group covers password auth; no setuid requested.
+    reasons = []
+    if allow_password and not in_shadow:
+        reasons.append(
+            "password authentication (PAM reads /etc/shadow)"
+        )
+    if run_as_user:
+        reasons.append("per-user session privilege drop (setuid)")
+    log.warning(
+        "rd-server is running WITHOUT root, but the config enables %s. "
+        "These features need root: start the server via the systemd unit "
+        "(User=root), or `sudo rd-server`, or — for password auth only — add "
+        "the running user to the 'shadow' group (`sudo usermod -aG shadow "
+        "$USER`), or disable the features (allow_password=false, "
+        "run_as_user=false). Otherwise logins/sessions will silently fail. "
+        "(pam_service=%r)", " and ".join(reasons), pam_service,
+    )
+
+
 def authorized_keys_for(username: str) -> list[str]:
     """Return the raw OpenSSH public-key lines from the user's authorized_keys."""
     _require_pwd()

@@ -40,7 +40,7 @@ from client import i18n
 from client.theme import apply_theme
 from server_gui.controller import (
     BACKENDS, CODECS, ConfigController, ConfigError, GuiPrefs, LOG_LEVELS,
-    ServerGuiConfig, ServiceController, pick_controller,
+    ServerGuiConfig, ServiceController, pick_controller, privilege_warning,
     tail_log,
 )
 
@@ -210,6 +210,11 @@ class ServerGuiWindow(QMainWindow):
         self.lbl_managed.setStyleSheet("color: gray;")
         v.addWidget(self.lbl_managed)
 
+        self.lbl_priv_warn = QLabel("")
+        self.lbl_priv_warn.setWordWrap(True)
+        self.lbl_priv_warn.setStyleSheet("background-color: #ffcc00; color: #000;")
+        self.lbl_priv_warn.hide()
+
         # Buttons
         btn_row = QHBoxLayout()
         self.btn_start = QPushButton(_tr("Старт"))
@@ -339,6 +344,13 @@ class ServerGuiWindow(QMainWindow):
             else _tr("Управление: демон") if st.managed_by == "daemon"
             else ""
         )
+        warn = privilege_warning(self.cfg)
+        if warn:
+            self.lbl_priv_warn.setText(warn)
+            self.lbl_priv_warn.show()
+        else:
+            self.lbl_priv_warn.clear()
+            self.lbl_priv_warn.hide()
         # Autostart checkbox reflects systemd-managed state. Block signals so
         # we don't trigger a toggle when we're just reflecting reality.
         self.chk_autostart.blockSignals(True)

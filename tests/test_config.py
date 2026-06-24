@@ -81,7 +81,12 @@ def test_corrupted_json_falls_back_to_defaults(tmp_path, capsys):
 def test_unreadable_config_falls_back_to_defaults(tmp_path, capsys):
     """A permission-denied file shouldn't crash startup either."""
     import os as _os
+    import sys as _sys
     import pytest as _pytest
+    # POSIX permission model only — Windows has no geteuid and a different ACL
+    # model, so chmod(0) doesn't reliably block reads there.
+    if _sys.platform == "win32":
+        _pytest.skip("POSIX permission model only")
     # Root bypasses file permissions, so this can't be exercised as root.
     if _os.geteuid() == 0:
         _pytest.skip("root reads any file; permission test needs non-root")
