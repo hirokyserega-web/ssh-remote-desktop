@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import os
 
 from .base import CursorImage, DisplayBackend, Frame
 from ..keymap import keysym_to_x11
@@ -68,6 +69,7 @@ class X11Backend(DisplayBackend):
         self._have_xfixes = False
         self._last_cursor_serial = -1
         self._w, self._h = geometry
+        self._saved_xauthority = None
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -77,6 +79,10 @@ class X11Backend(DisplayBackend):
             self._init_mss()
             return
         disp_name = self.env.get("DISPLAY", ":0")
+        xauth_path = self.env.get("XAUTHORITY")
+        if xauth_path:
+            self._saved_xauthority = os.environ.get("XAUTHORITY")
+            os.environ["XAUTHORITY"] = xauth_path
         self._dpy = xdisplay.Display(disp_name)
         self._screen = self._dpy.screen()
         self._root = self._screen.root
@@ -141,6 +147,10 @@ class X11Backend(DisplayBackend):
                 self._dpy.close()
         except Exception:
             pass
+        if self._saved_xauthority is not None:
+            os.environ["XAUTHORITY"] = self._saved_xauthority
+        elif "XAUTHORITY" in os.environ:
+            del os.environ["XAUTHORITY"]
 
     # -- geometry ----------------------------------------------------------
     def screen_size(self) -> tuple[int, int]:
