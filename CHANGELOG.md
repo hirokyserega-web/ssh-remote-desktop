@@ -4,10 +4,14 @@ All notable changes to this project are documented here. The format is
 loosely [Keep a Changelog](https://keepachangelog.com/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.4.12] - 2026-06-25
 
 ### Fixed
-- `rd-server-gui`
+- `rd-server-gui` now applies the on-screen form before Start/Restart, reports port conflicts instead of silently staying on the old port, and keeps the status honest when auth/startup is limited without root.
+- `rd-server`/`rd-server-gui` now forward the auth/privilege toggles and config path correctly into daemon mode.
+- Display-server startup now waits for X11/Wayland readiness instead of sleeping blindly, retries X11 display numbers on races, and falls back cleanly when the Wayland runtime dir is unwritable.
+- The codec surface was cleaned up so `webp` no longer pretends to be a supported wire codec; it now falls back explicitly to JPEG with a clear warning path.
+- Linux dependency pins were aligned across `pyproject.toml`, `requirements.txt`, and `requirements-linux.txt`, and the MIT license file was restored.
 
 ## [1.4.11] - 2026-06-23
 
