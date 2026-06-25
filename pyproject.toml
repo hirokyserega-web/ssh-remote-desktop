@@ -9,15 +9,30 @@ description = "SSH-only remote desktop (X11 + Wayland)"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
+# Explicit license classifier so tooling (GitHub / PyPI) identifies the project
+# as MIT instead of "Other (NOASSERTION)" — the LICENSE file is the full MIT
+# text, this declares it in metadata too. See B3.
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+]
 # Core (protocol, transport, crypto): needed by BOTH client and server on
 # EVERY platform (Linux, macOS, Windows). Kept free of any GUI / display deps
 # so `pip install ssh-remote-desktop` works on Windows/macOS for the client.
+#
+# Version lower bounds are kept in sync with requirements.txt / requirements-
+# linux.txt (single source of truth enforced by tests/test_dependency_consistency.py).
 dependencies = [
     "asyncssh>=2.23",
     "cryptography>=44",
     "bcrypt>=4.2",
-    "numpy>=1.26",
-    "msgpack>=1.0",
+    "numpy>=2.2",
+    "msgpack>=1.1",
 ]
 
 # Optional, platform-tagged dependency groups. Install the ones you need:
@@ -27,26 +42,30 @@ dependencies = [
 # JPEG-only encode/decode works with just Pillow; H.264/H.265 needs PyAV.
 [project.optional-dependencies]
 client = [
-    "PySide6>=6.6",
-    "Pillow>=10",
+    "PySide6>=6.8",
+    "Pillow>=11",
 ]
 jpeg = [
-    "Pillow>=10",
+    "Pillow>=11",
 ]
 h264 = [
-    "av>=11",
-    "Pillow>=10",
+    "av>=14.0",
+    "Pillow>=11",
 ]
 server = [
-    "Pillow>=10",
+    "Pillow>=11",
+    # python-pam 2.x imports `six` at runtime but does NOT declare it in its
+    # pip metadata (upstream packaging bug), so `import pam` dies with
+    # ModuleNotFoundError: No module named 'six' unless six is pinned here.
     "python-pam>=2.0.2 ; sys_platform == 'linux'",
+    "six>=1.16 ; sys_platform == 'linux'",
 ]
 server-gui = [
-    "PySide6>=6.6",
+    "PySide6>=6.8",
 ]
 server-x11 = [
     "python-xlib>=0.33 ; sys_platform == 'linux'",
-    "mss>=9 ; sys_platform == 'linux'",
+    "mss>=10.0 ; sys_platform == 'linux'",
 ]
 server-wayland = [
     "evdev>=1.9 ; sys_platform == 'linux'",
@@ -55,15 +74,16 @@ server-wayland = [
 ]
 # Convenience: everything for a Linux host running both client and server.
 linux-full = [
-    "PySide6>=6.6",
-    "av>=11",
-    "Pillow>=10",
+    "PySide6>=6.8",
+    "av>=14.0",
+    "Pillow>=11",
     "python-xlib>=0.33",
-    "mss>=9",
+    "mss>=10.0",
     "evdev>=1.9",
     "pywayland>=0.4.18",
     "dbus-next>=0.2",
     "python-pam>=2.0.2",
+    "six>=1.16",
 ]
 dev = [
     "pytest>=8",

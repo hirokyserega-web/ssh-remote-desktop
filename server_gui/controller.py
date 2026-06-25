@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import signal
+import socket
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field, fields
@@ -41,6 +44,9 @@ except ModuleNotFoundError:  # pragma: no cover
 from server.daemon import (
     default_log_file,
     default_pidfile,
+    is_likely_rd_server,
+    is_pid_alive,
+    live_pid_from_pidfile,
     remove_pidfile,
     status as daemon_status,
     stop as daemon_stop,
@@ -60,7 +66,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
 )
 
 BACKENDS = ("auto", "x11", "wayland")
-CODECS = ("h264", "h265", "jpeg", "webp")
+CODECS = ("h264", "h265", "jpeg")
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 # Sentinel: never write these keys, even if present in a loaded file — the GUI
@@ -260,6 +266,81 @@ def _run(cmd: list[str], *, timeout: float = 5.0) -> subprocess.CompletedProcess
         return subprocess.CompletedProcess(cmd, 1, "", str(exc))
 
 
+# --------------------------------------------------------------------------- #
+# Port probing — used by the daemon controller (start pre-check) and the GUI
+# health check. Kept Qt-free and side-effect-free so the test suite can exercise
+# them directly.
+# --------------------------------------------------------------------------- #
+def _connect_host(host: str) -> str:
+    """Normalise a bind address into one a client can connect() to.
+
+    ``0.0.0.0`` / ``::`` are listen-only wildcards; connecting to them is
+    undefined, so map them to the loopback the server is also reachable on.
+    """
+    if host in ("", "0.0.0.0", "::", None):
+        return "127.0.0.1"
+    return host
+
+
+def port_listening(host: str, port: int, *, timeout: float = 0.5) -> bool:
+    """True when something accepts a TCP connection on ``host:port``.
+
+    Used by the GUI status refresh as a cheap liveness probe: a daemon with a
+    live pidfile but no listener (root-requiring auth/startup that silently
+    failed) is reported as "Запущен, но порт не слушается" instead of a healthy
+    "Запущен".
+    """
+    try:
+        with socket.create_connection((_connect_host(host), port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _port_bindable(host: str, port: int) -> bool:
+    """True when a fresh listener can bind ``host:port`` (i.e. it is free).
+
+    SO_REUSEADDR mirrors what asyncssh does, so a socket in TIME_WAIT does not
+    cause a false "busy" — only an *active listener* makes the bind fail. Used
+    as a start() pre-check so a port collision surfaces as an actionable error
+    before spawning a child that would just exit in the grace window.
+    """
+    h = host or "0.0.0.0"
+    family = socket.AF_INET6 if ":" in h else socket.AF_INET
+    s = socket.socket(family, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((h, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _port_listener_pid(port: int) -> Optional[int]:
+    """Best-effort PID of the process listening on ``port`` (Linux).
+
+    Tries ``ss`` then ``lsof``. Both need root to report *another* user's PID,
+    so this often returns None for a non-rd-server holder — callers fall back to
+    an actionable "port busy; run sudo ss -tlnp" message in that case. Mockable
+    via :func:`_run` so the test suite can exercise the parsing without a real
+    socket holder.
+    """
+    r = _run(["ss", "-tlnpH", f"sport = :{port}"], timeout=3.0)
+    if r.stdout:
+        m = re.search(r"pid=(\d+)", r.stdout)
+        if m:
+            return int(m.group(1))
+    r = _run(["lsof", "-tci", f":{port}"], timeout=3.0)
+    if r.stdout:
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if line.isdigit():
+                return int(line)
+    return None
+
+
 def _have_systemctl() -> bool:
     return shutil.which("systemctl") is not None
 
@@ -411,10 +492,11 @@ class DaemonController(ServiceController):
     name = "daemon"
 
     def __init__(self, cfg: ServerGuiConfig, *, binary: str = "rd-server",
-                 pidfile: Optional[str] = None):
+                 pidfile: Optional[str] = None, config_path: Optional[str] = None):
         self.cfg = cfg
         self.binary = self._resolve_binary(binary)
         self.pidfile = pidfile or default_pidfile()
+        self.config_path = config_path
         self.last_error: Optional[str] = None
 
     @staticmethod
@@ -485,16 +567,36 @@ class DaemonController(ServiceController):
         ``--log-file`` is intentionally NOT passed: we redirect the child's
         stderr to ``log_file`` ourselves, so a second ``FileHandler`` would
         duplicate every line.
+
+        All ServerGuiConfig fields that the server honours are forwarded as CLI
+        overrides so the panel's settings actually reach the daemon. We ALSO pass
+        ``--config <path>`` when a config file is known: file-only knobs the GUI
+        does not expose (host_key, pam_service, clipboard/files toggles, jpeg
+        quality, …) then come from the file, while the CLI flags below override
+        the file per the precedence rule (defaults < file < CLI). Without these
+        flags the daemon used to start with ServerConfig *defaults*
+        (allow_password=True, run_as_user=True) that silently require root —
+        the "запущен, но не работает" symptom.
         """
-        cmd = [
-            self.binary, "--foreground", "--pidfile", self.pidfile,
+        cmd: list[str] = [self.binary, "--foreground", "--pidfile", self.pidfile]
+        # --config first: file is the source of truth for non-form fields, then
+        # the CLI flags below override the form-controlled ones.
+        if self.config_path:
+            cmd += ["--config", self.config_path]
+        cmd += [
             "--host", self.cfg.host, "--port", str(self.cfg.port),
             "--backend", self.cfg.backend, "--codec", self.cfg.codec,
             "--max-sessions", str(self.cfg.max_sessions),
             "--idle-timeout", str(self.cfg.idle_timeout),
             "--shared-dir", self.cfg.shared_dir,
             "--fps", str(self.cfg.fps),
+            "--bitrate-kbps", str(self.cfg.bitrate_kbps),
         ]
+        # Auth / privilege toggles — these MUST reach the daemon or it starts
+        # with root-requiring defaults and silently rejects every login.
+        cmd += ["--allow-password" if self.cfg.allow_password else "--no-allow-password"]
+        cmd += ["--allow-publickey" if self.cfg.allow_publickey else "--no-allow-publickey"]
+        cmd += ["--run-as-user" if self.cfg.run_as_user else "--no-run-as-user"]
         if self.cfg.log_level:
             cmd += ["--log-level", self.cfg.log_level]
         return cmd
@@ -510,10 +612,39 @@ class DaemonController(ServiceController):
             )
             return False
 
-        # A stale pidfile pointing at a live-but-unrelated PID would make the
-        # child bail with "already running"; clear it first so a fresh start
-        # isn't blocked by a recycled PID from a previous, unrelated process.
-        remove_pidfile(self.pidfile)
+        # Refuse to start a second instance: a live pidfile means a server is
+        # already running (often on the old port after a config change). Do NOT
+        # delete a live pidfile — that would orphan the running process and make
+        # `rd-server --stop` impossible. Stale pidfiles (dead / recycled PID)
+        # are cleaned up by live_pid_from_pidfile itself.
+        existing = live_pid_from_pidfile(self.pidfile)
+        if existing is not None:
+            self.last_error = (
+                f"rd-server уже запущен (pid {existing}) — сначала остановите "
+                f"его кнопкой «Стоп» либо используйте «Перезапуск»."
+            )
+            return False
+
+        # Port pre-check: surface a collision as an actionable error BEFORE we
+        # spawn a child that would just exit in the grace window. This is what
+        # made "поменял порт на 2224 — не стартует" look like a mute failure:
+        # the new server couldn't bind because the old one (or another process)
+        # still held the port, and the panel only showed «Остановлен».
+        if not _port_bindable(self.cfg.host, self.cfg.port):
+            holder = _port_listener_pid(self.cfg.port)
+            if holder and holder != os.getpid():
+                self.last_error = (
+                    f"порт {self.cfg.port} занят процессом PID {holder} "
+                    f"(не наш rd-server). Освободите его: "
+                    f"sudo ss -tlnp | grep :{self.cfg.port}"
+                )
+            else:
+                self.last_error = (
+                    f"порт {self.cfg.port} занят. Найдите и остановите "
+                    f"держатель: sudo ss -tlnp | grep :{self.cfg.port} "
+                    f"или выберите свободный порт в настройках."
+                )
+            return False
 
         log_file = self._resolve_log_file()
         log_dir = os.path.dirname(os.path.abspath(log_file))
@@ -570,6 +701,44 @@ class DaemonController(ServiceController):
         )
         return ok
 
+    def _reap_stray_on_port(self) -> None:
+        """Best-effort: SIGTERM an rd-server still holding our configured port.
+
+        A pidfile-based :meth:`stop` is the primary path, but a previous crash
+        or a hand-deleted pidfile can leave an orphan listening on the port. We
+        look it up with ``ss`` and, when it looks like one of our processes
+        (``rd-server`` / a python dev run) and is NOT us, SIGTERM it so the
+        fresh start can bind. Non-rd-server holders are left alone: the
+        port-busy branch in :meth:`start` reports them to the operator instead.
+        """
+        pid = _port_listener_pid(self.cfg.port)
+        if not pid or pid == os.getpid():
+            return
+        if not is_pid_alive(pid) or not is_likely_rd_server(pid):
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            return
+        # Give it a moment to release the port; don't block the panel long.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if not is_pid_alive(pid):
+                break
+            time.sleep(0.1)
+
+    def restart(self) -> bool:
+        """Guarantee the old server is gone, then start a fresh one.
+
+        Overrides the base ``stop() and start()`` so a port/config change
+        reliably tears down the previous process first: the pidfile stop kills
+        the recorded process, and :meth:`_reap_stray_on_port` catches an orphan
+        whose pidfile was lost. Only then do we :meth:`start`.
+        """
+        self.stop()
+        self._reap_stray_on_port()
+        return self.start()
+
     def stop(self) -> bool:
         return daemon_stop(self.pidfile)
 
@@ -579,11 +748,12 @@ class DaemonController(ServiceController):
         return False
 
 
-def pick_controller(cfg: ServerGuiConfig) -> ServiceController:
+def pick_controller(cfg: ServerGuiConfig, *,
+                    config_path: Optional[str] = None) -> ServiceController:
     """Return the most appropriate controller for the current machine."""
     if _have_systemctl() and unit_installed():
         return SystemdController()
-    return DaemonController(cfg)
+    return DaemonController(cfg, config_path=config_path)
 
 
 # --------------------------------------------------------------------------- #

@@ -1,8 +1,11 @@
 # Linux-only runtime dependencies.
 # These packages have no Windows/macOS wheels and are installed only on Linux.
 # CI installs this file on linux jobs; install.sh sources it on Linux hosts.
-evdev>=1.7
-pywayland>=0.4.13
+#
+# Kept in sync with pyproject.toml server / server-wayland extras (the Linux
+# deps). tests/test_dependency_consistency.py enforces matching lower bounds.
+evdev>=1.9
+pywayland>=0.4.18
 dbus-next>=0.2
 # PAM password authentication (server/auth.py imports `pam` dynamically).
 # Linux-only: python-pam ships no Windows/macOS wheels. PAM reads /etc/shadow,
@@ -11,4 +14,5 @@ python-pam>=2.0.2
 # python-pam 2.x imports `six` at runtime but does NOT declare it in its
 # pip metadata (packaging bug upstream), so `import pam` dies with
 # ModuleNotFoundError: No module named 'six' unless six is pinned alongside.
+# Also declared in pyproject [project.optional-dependencies] server.
 six>=1.16

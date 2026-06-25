@@ -1,12 +1,15 @@
 # Cross-platform runtime dependencies.
 # Installed on every OS (Linux, Windows, macOS).
+#
+# Kept in sync with pyproject.toml [project.dependencies] + cross-platform
+# extras. tests/test_dependency_consistency.py enforces that the lower bounds
+# here match pyproject, so there is a single source of truth.
 asyncssh>=2.23
 cryptography>=44
 bcrypt>=4.2
 numpy>=2.2
 msgpack>=1.1
 pillow>=11
-async-timeout>=5
 python-xlib>=0.33
 mss>=10.0
 av>=14.0

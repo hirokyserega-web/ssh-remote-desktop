@@ -84,9 +84,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host-key", dest="host_key", help="SSH host key path")
     p.add_argument("--max-sessions", dest="max_sessions", type=int)
     p.add_argument("--idle-timeout", dest="idle_timeout", type=int)
-    p.add_argument("--codec", choices=["h264", "h265", "jpeg", "webp"])
+    # 'webp' is intentionally NOT a choice: it was accepted but never encoded
+    # (silently downgraded to jpeg in ConnectionHandler._negotiate_codec),
+    # which misled operators. README advertises only h264/h265/jpeg. A stray
+    # codec="webp" in a config file is still handled gracefully (logged +
+    # jpeg fallback) in _negotiate_codec / create_encoder.
+    p.add_argument("--codec", choices=["h264", "h265", "jpeg"])
     p.add_argument("--fps", type=int)
+    p.add_argument("--bitrate-kbps", dest="bitrate_kbps", type=int,
+                   help="target video bitrate in kbps")
     p.add_argument("--shared-dir", dest="shared_dir")
+    # Auth / privilege toggles. BooleanOptionalAction gives --allow-password /
+    # --no-allow-password pairs from one definition; default=None means "not
+    # specified" so the config-file/defaults value wins unless overridden.
+    p.add_argument("--allow-password",
+                   dest="allow_password", action=argparse.BooleanOptionalAction,
+                   default=None,
+                   help="enable/disable PAM password authentication")
+    p.add_argument("--allow-publickey",
+                   dest="allow_publickey", action=argparse.BooleanOptionalAction,
+                   default=None,
+                   help="enable/disable public-key authentication")
+    p.add_argument("--run-as-user",
+                   dest="run_as_user", action=argparse.BooleanOptionalAction,
+                   default=None,
+                   help="drop privileges to each session's target user (needs root)")
+    p.add_argument("--pam-service", dest="pam_service",
+                   help="PAM service name for password auth (default: login)")
     p.add_argument("--no-clipboard", dest="clipboard_enabled", action="store_false", default=None)
     p.add_argument("--no-files", dest="files_enabled", action="store_false", default=None)
     p.add_argument("--log-level", dest="log_level")
@@ -436,8 +460,21 @@ def _foreground_argv(args, *, pidfile: str) -> list[str]:
         cmd += ["--codec", args.codec]
     if args.fps is not None:
         cmd += ["--fps", str(args.fps)]
+    if args.bitrate_kbps is not None:
+        cmd += ["--bitrate-kbps", str(args.bitrate_kbps)]
     if args.shared_dir:
         cmd += ["--shared-dir", args.shared_dir]
+    # Auth / privilege toggles must reach the daemon child too, otherwise the
+    # panel's "allow_password/run_as_user" choices are silently lost and the
+    # daemon starts with ServerConfig defaults (both True → need root).
+    if args.allow_password is not None:
+        cmd += ["--allow-password" if args.allow_password else "--no-allow-password"]
+    if args.allow_publickey is not None:
+        cmd += ["--allow-publickey" if args.allow_publickey else "--no-allow-publickey"]
+    if args.run_as_user is not None:
+        cmd += ["--run-as-user" if args.run_as_user else "--no-run-as-user"]
+    if args.pam_service:
+        cmd += ["--pam-service", args.pam_service]
     if args.clipboard_enabled is False:
         cmd += ["--no-clipboard"]
     if args.files_enabled is False:

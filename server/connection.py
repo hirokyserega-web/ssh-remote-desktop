@@ -125,11 +125,18 @@ class ConnectionHandler:
                 return requested
             except Exception:
                 return "jpeg"
-        if requested in ("jpeg", "webp"):
-            # webp is not yet implemented as a wire codec; treat as jpeg so the
-            # client still gets a working stream instead of an error.
+        if requested == "jpeg":
             return "jpeg"
-        return self.cfg.codec
+        # Anything else (e.g. a stale "webp" from an older config, or a typo)
+        # is NOT a real wire codec the client can decode. Log it loudly and fall
+        # back to jpeg instead of silently sending a stream the client can't
+        # identify — the old code swallowed "webp" with no warning, so the
+        # operator got JPEG while believing they had configured WebP.
+        log.warning(
+            "requested codec %r is not a supported wire codec; falling back to "
+            "jpeg. Supported codecs: h264, h265, jpeg.", requested,
+        )
+        return "jpeg"
 
     def _adapt(self, msg: dict):
         """Lower or raise bitrate/FPS based on client-reported loss/latency."""

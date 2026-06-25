@@ -25,7 +25,21 @@ jobs:
       - name: Ruff
         run: ruff check .
       - name: Compile
-        run: python -m compileall -q common crypto server client tests
+        run: python -m compileall -q common crypto server client server_gui tests
+      - name: Build scripts smoke (bash -n + present)
+        run: |
+          set -e
+          # The Nuitka build scripts (build_*.sh) are referenced by README and
+          # install.sh --build; a missing or syntactically-broken one breaks
+          # `install.sh --build` and the release flow. Syntax-check each and
+          # assert the ones the docs/installer reference actually exist.
+          for f in build_*.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+          for expected in build_client_linux.sh build_server_linux.sh build_server_gui_linux.sh; do
+            test -f "$expected" || { echo "missing build script: $expected"; exit 1; }
+          done
 
   scripts-lint:
     name: Installer scripts (bash -n + shellcheck)

@@ -305,6 +305,15 @@ def create_encoder(codec: str, width: int, height: int, *, fps: int,
             return H264Encoder(width, height, fps, bitrate_kbps, codec)
         except Exception as exc:
             log.warning("H.264 encoder init failed (%s); falling back to JPEG", exc)
+    # 'jpeg' is the only supported wire image codec. Any other value (e.g. a
+    # stale 'webp' from an older config, or an unknown string) is NOT a real
+    # wire codec the client can decode — warn loudly and fall back to JPEG
+    # instead of silently sending a stream the client can't identify.
+    if codec not in ("h264", "h265", "jpeg"):
+        log.warning(
+            "unsupported codec %r requested; falling back to jpeg. "
+            "Supported codecs: h264, h265, jpeg.", codec,
+        )
     if _HAVE_PIL and _HAVE_NUMPY:
         return JpegEncoder(width, height, fps, bitrate_kbps, quality)
     raise RuntimeError("no usable encoder: install pyav or pillow + numpy")

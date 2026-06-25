@@ -40,8 +40,8 @@ from client import i18n
 from client.theme import apply_theme
 from server_gui.controller import (
     BACKENDS, CODECS, ConfigController, ConfigError, GuiPrefs, LOG_LEVELS,
-    ServerGuiConfig, ServiceController, pick_controller, privilege_warning,
-    tail_log,
+    ServerGuiConfig, ServiceController, pick_controller, port_listening,
+    privilege_warning, tail_log,
 )
 
 TRAY_ICON_B64 = (
@@ -318,7 +318,7 @@ class ServerGuiWindow(QMainWindow):
     # -- service control -----------------------------------------------------
     def _refresh_svc(self) -> None:
         try:
-            self._svc = pick_controller(self.cfg)
+            self._svc = pick_controller(self.cfg, config_path=self.config_path)
         except Exception:
             self._svc = None
 
@@ -337,7 +337,17 @@ class ServerGuiWindow(QMainWindow):
             self.chk_autostart.setEnabled(False)
             return
         st = self._svc.state()
-        self.lbl_state.setText(self._state_label(st.state))
+        # A live pidfile only proves the process exists — not that logins work.
+        # Surface privilege / port problems so "Запущен" stops lying (A4):
+        # without root the listener comes up but PAM/setuid silently fail, and
+        # a half-started broker may not even be listening.
+        label = self._state_label(st.state)
+        if st.state == "running":
+            if not port_listening(self.cfg.host, self.cfg.port, timeout=0.4):
+                label = _tr("Запущен, но порт не слушается")
+            elif privilege_warning(self.cfg) is not None:
+                label = _tr("Запущен (ограниченно: вход не работает без root)")
+        self.lbl_state.setText(label)
         self.lbl_pid.setText(str(st.pid) if st.pid else "—")
         self.lbl_managed.setText(
             _tr("Управление: systemd") if st.managed_by == "systemd"
@@ -370,7 +380,32 @@ class ServerGuiWindow(QMainWindow):
                 # show a hint instead of an empty pane.
                 self.log_view.setPlainText("")
 
+    def _apply_form_before_control(self) -> bool:
+        """Persist the on-screen form so Start/Restart use the current values.
+
+        Previously «Старт» ran the server from the *last saved* config, so
+        changing the port and pressing Start (without «Применить и сохранить»)
+        silently kept the old, possibly-occupied port. Now we collect+save the
+        form first; on a validation error we surface it and abort instead of
+        starting on stale settings.
+        """
+        cfg = self._collect_form()
+        try:
+            self.ctrl.save(cfg)
+        except ConfigError as exc:
+            QMessageBox.warning(self, _tr("Настройки невалидны"), str(exc))
+            return False
+        self.cfg = cfg
+        self._refresh_svc()
+        return True
+
     def _on_start(self) -> None:
+        # Start must use the on-screen values (e.g. a just-changed port), not
+        # the stale saved config. Apply the form first; if it fails validation
+        # we abort with the error instead of silently starting on the old port.
+        if not self._apply_form_before_control():
+            self._refresh_status()
+            return
         if self._svc and self._svc.start():
             self.statusBar().showMessage(_tr("Сервер запущен"), 3000)
         else:
@@ -388,6 +423,10 @@ class ServerGuiWindow(QMainWindow):
         self._refresh_status()
 
     def _on_restart(self) -> None:
+        # Restart must pick up a just-changed port/config: apply the form first
+        if not self._apply_form_before_control():
+            self._refresh_status()
+            return
         if self._svc and self._svc.restart():
             self.statusBar().showMessage(_tr("Сервер перезапущен"), 3000)
         else:
