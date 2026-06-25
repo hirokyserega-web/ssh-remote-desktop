@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format is
 loosely [Keep a Changelog](https://keepachangelog.com/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.13] - 2026-06-25
+
+### Fixed
+- X11 sessions connect again: `X11Backend` now exports the per-session `XAUTHORITY` into `os.environ` right before constructing the `python-xlib` `Display()`. The broker runs as root with no `XAUTHORITY` in its process environment, so `python-xlib` (which reads the cookie path from `os.environ`, not the per-session `env` dict) could not find the cookie and `Xvfb -auth` rejected the connection with `Xlib.error.DisplayConnectionError: ... Authorization required, but no authorization protocol specified`. The original `os.environ` value is restored in `stop()` so parallel sessions don't clobber each other. (`server/backend/x11.py`)
+
 ## [1.4.12] - 2026-06-25
 
 ### Fixed
