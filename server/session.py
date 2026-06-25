@@ -267,7 +267,15 @@ class Session:
         idx = _free_display_number(1, 100)
         self.wayland_display = f"wayland-{idx}"
         runtime = f"/run/user/{self.user.uid}"
-        os.makedirs(runtime, exist_ok=True)
+        # Mirror the x11 path's defensive fallback: /run/user/<uid> may be
+        # unwritable when the server isn't root (CI, restricted /run), so fall
+        # back to a per-user temp dir so the compositor still gets a place for
+        # its socket instead of crashing on makedirs before anything starts.
+        try:
+            os.makedirs(runtime, exist_ok=True)
+        except (PermissionError, OSError):
+            runtime = f"/tmp/rd-runtime-{self.user.uid}"
+            os.makedirs(runtime, exist_ok=True)
         try:
             os.chown(runtime, self.user.uid, self.user.gid)
             os.chmod(runtime, 0o700)
