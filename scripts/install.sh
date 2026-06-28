@@ -26,6 +26,10 @@ DIAGNOSE="no"
 VERSION=""      # specific release version (X.Y.Z), empty = latest
 FROM_SOURCE="no"
 COMPONENT=""    # client | server | both; empty = auto (both on linux, client elsewhere)
+WITH_WM="${RD_WITH_WM:-}"        # --with-wm=NAME (or RD_WITH_WM env); empty = not requested
+WITH_WM_REQUESTED="no"           # becomes "yes" once --with-wm is seen in any form
+if [[ -n "$WITH_WM" ]]; then WITH_WM_REQUESTED="yes"; fi
+SERVER_WM_WARN="no"             # set to "yes" by install_session_defaults when server has no WM
 
 usage() {
   cat <<USAGE
@@ -42,6 +46,7 @@ Usage: install.sh [options]
   --version X.Y.Z  Install a specific release version (binary or source tag)
   --from-source    Skip release binaries; always build from source
   --component C    client | server | server-gui | both (default: both on Linux, client elsewhere; "server" on Linux = daemon + control panel)
+  --with-wm=NAME   Server only (Linux): pre-install a window manager and generate /etc/ssh-remote-desktop/server.toml. NAME: openbox|plasma|xfce|xterm (or a raw package name). Bare --with-wm defaults to openbox. Existing server.toml is never overwritten.
   --uninstall      Remove the install (binary, venv, sources, symlinks, empty config)
   --diagnose       Print diagnostics (PATH, Qt platform, system libs) and exit
   --doctor         Alias for --diagnose
@@ -49,6 +54,7 @@ Usage: install.sh [options]
 
 Environment:
   SSH_REMOTE_DESKTOP_DIR  default install directory
+  RD_WITH_WM              same as --with-wm=NAME
 USAGE
 }
 
@@ -83,6 +89,20 @@ while [[ $# -gt 0 ]]; do
       ;;
     --from-source) FROM_SOURCE="yes"; shift;;
     --component) COMPONENT="$2"; shift 2;;
+    --with-wm)
+      WITH_WM_REQUESTED="yes"
+      if [[ $# -ge 2 && "${2#-}" == "$2" ]]; then
+        WITH_WM="$2"; shift 2
+      else
+        WITH_WM="openbox"; shift
+      fi
+      ;;
+    --with-wm=*)
+      WITH_WM_REQUESTED="yes"
+      WITH_WM="${1#*=}"
+      if [[ -z "$WITH_WM" ]]; then WITH_WM="openbox"; fi
+      shift
+      ;;
     --uninstall) UNINSTALL="yes"; shift;;
     --diagnose|--doctor) DIAGNOSE="yes"; shift;;
     -h|--help) usage; exit 0;;
@@ -509,6 +529,157 @@ install_system_deps() {
     arch|manjaro|endeavouros|garuda|arcolinux) pkg_install python-pam || true;;
     alpine) pkg_install py3-pam || true;;
   esac
+}
+
+# ---- server session defaults (Linux, --component server) -------------------
+# Resolve the concrete package name for a logical window-manager name on the
+# current distro. Base mapping (per spec): openbox->openbox, plasma->plasma
+# -desktop, xfce->xfce4, xterm->xterm. Anything not in the table is passed
+# through verbatim so an operator can request a raw package name. Distro
+# overrides apply where the canonical name differs from the base mapping.
+wm_package() {
+  local wm="$1" pkg
+  case "$wm" in
+    openbox) pkg="openbox";;
+    plasma)  pkg="plasma-desktop";;
+    xfce)    pkg="xfce4";;
+    xterm)   pkg="xterm";;
+    *)       pkg="$wm";;
+  esac
+  case "${DISTRO:-}" in
+    fedora|rhel|centos|rocky|almalinux)
+      # Fedora has no xfce4 metapackage; the session launcher is the right
+      # unit to install (and the per-session window_manager command).
+      if [[ "$wm" == "xfce" ]]; then pkg="xfce4-session"; fi
+      ;;
+  esac
+  echo "$pkg"
+}
+
+# Binary name used both for the idempotency "already installed?" check and as
+# the per-session window_manager command written into server.toml. For
+# openbox/xterm the logical name IS the binary; plasma/xfce need the real
+# launcher.
+wm_binary() {
+  case "$1" in
+    openbox) echo "openbox";;
+    plasma)  echo "plasmashell";;
+    xfce)    echo "xfce4-session";;
+    xterm)   echo "xterm";;
+    *)       echo "$1";;
+  esac
+}
+
+# Is the "server" component in the expanded component list for this run?
+wants_server() {
+  local sel comps c
+  sel="$(default_components)"
+  comps="$(expand_components "$sel")"
+  for c in $comps; do
+    [[ "$c" == "server" ]] && return 0
+  done
+  return 1
+}
+
+# Idempotency check: is the WM binary already on PATH? Wrapped so tests (and
+# future logic) can override it without re-implementing the command -v dance.
+wm_present() { command -v "$1" >/dev/null 2>&1; }
+
+# Root-aware filesystem helpers so install_session_defaults works whether the
+# installer runs as root (the common `sudo bash` case) or as a sudoer with
+# passwordless sudo (cached by ensure_sudo in install_system_deps).
+exists_root() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    [[ -e "$1" ]]
+  else
+    sudo -n test -e "$1" 2>/dev/null
+  fi
+}
+mkdir_root() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    mkdir -p "$1"
+  else
+    sudo -n mkdir -p "$1"
+  fi
+}
+write_root() {  # $1 = absolute path, $2 = file content
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    printf '%s' "$2" > "$1"
+  else
+    printf '%s' "$2" | sudo -n tee "$1" >/dev/null
+  fi
+}
+
+# Install a window manager for the server (X11 backend) and generate
+# /etc/ssh-remote-desktop/server.toml on first run. Idempotent: re-runs do not
+# reinstall an already-present WM and never overwrite an existing server.toml.
+# Only acts for --component server (or the default "both" on Linux, which
+# includes server). Sets SERVER_WM_WARN="yes" when the server will end up
+# without a window_manager so print_next_steps can warn about the black screen.
+install_session_defaults() {
+  [[ "$OS" == "linux" ]] || return 0
+  wants_server || return 0
+
+  local server_toml="/etc/ssh-remote-desktop/server.toml"
+
+  if [[ "$WITH_WM_REQUESTED" != "yes" ]]; then
+    # No WM requested: do not touch any existing config; flag the post-install
+    # warning so the operator knows they'll get a black screen until
+    # window_manager is set in server.toml.
+    SERVER_WM_WARN="yes"
+    return 0
+  fi
+
+  # Bare --with-wm / --with-wm= (empty value) -> openbox default.
+  local wm="$WITH_WM"
+  if [[ -z "$wm" ]]; then wm="openbox"; fi
+
+  local pkg bin
+  pkg="$(wm_package "$wm")"
+  bin="$(wm_binary "$wm")"
+
+  # Install the WM package only when its binary is missing -- keeps re-runs
+  # idempotent regardless of the package manager's reinstall behaviour.
+  if ! wm_present "$bin"; then
+    log "Installing window manager: $pkg (for --with-wm=$wm)"
+    if ! pkg_install "$pkg"; then
+      warn "Failed to install $pkg. The server will start, but without a WM you'll get a black screen. Install $pkg manually and set window_manager in $server_toml."
+      SERVER_WM_WARN="yes"
+      return 0
+    fi
+  else
+    log "Window manager already present: $bin (skipping install of $pkg)."
+  fi
+
+  # Generate server.toml ONLY when it does not exist; never overwrite an
+  # operator-edited config (idempotency + safe re-runs).
+  if exists_root "$server_toml"; then
+    warn "$server_toml already exists -- leaving it untouched. Edit it manually if you want window_manager = \"$wm\"."
+    SERVER_WM_WARN="no"
+    return 0
+  fi
+  if ! mkdir_root "$(dirname "$server_toml")"; then
+    warn "Could not create $(dirname "$server_toml") (need root). Skipping server.toml generation."
+    SERVER_WM_WARN="yes"
+    return 0
+  fi
+  local content
+  content=$(cat <<TOML
+# /etc/ssh-remote-desktop/server.toml
+# Generated by the ssh-remote-desktop installer (--component server --with-wm=$wm).
+# Safe to edit: re-running the installer will NOT overwrite this file.
+backend = "x11"
+session_geometry = [1920, 1080]
+window_manager = "$wm"
+TOML
+)
+  if write_root "$server_toml" "$content"; then
+    log "Wrote $server_toml (backend=x11, session_geometry=[1920,1080], window_manager=\"$wm\")."
+    SERVER_WM_WARN="no"
+  else
+    warn "Could not write $server_toml (need root). Set window_manager = \"$wm\" manually to avoid a black screen."
+    SERVER_WM_WARN="yes"
+  fi
 }
 
 # ---- optional Nuitka build (source path) -----------------------------------
@@ -974,6 +1145,25 @@ do_uninstall() {
     rmdir "$cfgdir"
     log "Removed empty config dir $cfgdir"
   fi
+  # 4. System-wide server config under /etc/ssh-remote-desktop -- same policy
+  # as the user config above: only remove server.toml when it is empty, and
+  # only remove the directory when it is empty. A config the operator edited
+  # (e.g. a non-empty server.toml with a custom window_manager) is never
+  # wiped by an uninstall/re-install cycle.
+  local syscfg="/etc/ssh-remote-desktop"
+  if [[ -d "$syscfg" ]]; then
+    local sysfile="$syscfg/server.toml"
+    if [[ -f "$sysfile" && ! -s "$sysfile" ]]; then
+      if rm -f "$sysfile" 2>/dev/null; then
+        log "Removed empty $sysfile"
+      fi
+    fi
+    if [[ -z "$(find "$syscfg" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      if rmdir "$syscfg" 2>/dev/null; then
+        log "Removed empty config dir $syscfg"
+      fi
+    fi
+  fi
   log "Uninstall complete. (PATH edits in ~/.bashrc / ~/.profile left in place — remove the 'ssh-remote-desktop installer' lines manually if desired.)"
   exit 0
 }
@@ -995,6 +1185,7 @@ main() {
   do_uninstall
 
   install_system_deps || warn "Some system packages failed to install; continuing."
+  install_session_defaults || warn "Server session defaults setup incomplete; continuing."
 
   # --run mode: try prebuilt release binaries first (unless --from-source).
   if [[ "$MODE" == "run" && "$FROM_SOURCE" == "no" && "$OS" != "windows" ]]; then
@@ -1041,6 +1232,16 @@ or pre-create them with:
 
 See $TARGET_DIR/README.md for the full guide.
 NEXT
+  if [[ "${SERVER_WM_WARN:-no}" == "yes" ]]; then
+    cat <<'WMWARN'
+
+⚠️  Server (X11 backend): без window_manager в server.toml будет ЧЁРНЫЙ ЭКРАН.
+   Задайте его вручную или переустановите с --with-wm=..., например:
+     ... | sudo bash -s -- --component server --with-wm=openbox
+   Либо допишите в существующий конфиг:
+     echo 'window_manager = "openbox"' | sudo tee -a /etc/ssh-remote-desktop/server.toml
+WMWARN
+  fi
 }
 
 # Run only when executed or piped (curl|bash), not when sourced by the

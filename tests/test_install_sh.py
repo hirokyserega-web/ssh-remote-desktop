@@ -116,3 +116,330 @@ def test_uninstall_requires_target_dir():
     # Either it reports nothing to remove (0) or it errors cleanly (!=0) but
     # must never hang or produce a traceback.
     assert r.returncode in (0, 1)
+
+
+# ---- install_session_defaults: --with-wm / server.toml / uninstall --------
+
+def _run_sourced(snippet, extra_env=None):
+    """Run a bash snippet that sources install.sh (no main) with stubs.
+
+    SRD_NO_RUN_MAIN=1 keeps main() from running; we exercise individual
+    functions. RD_WITH_WM is stripped so env leakage doesn't flip the flag.
+    """
+    env = dict(os.environ)
+    env.pop("SSH_REMOTE_DESKTOP_DIR", None)
+    env.pop("RD_WITH_WM", None)
+    env["SRD_NO_RUN_MAIN"] = "1"
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(["bash", "-c", snippet], capture_output=True, text=True, env=env)
+
+
+def _snippet(body, args=""):
+    head = "set -euo pipefail\nsource __INSTALL__ " + args.strip() + "\n"
+    return (head + body).replace("__INSTALL__", repr(INSTALL))
+
+
+_SESSION_BODY = r'''OS=linux
+DISTRO=ubuntu
+COMPONENT=server
+TOML="$RD_TEST_TOML"
+LOG="$RD_TEST_LOG"
+exists_root() { [[ -e "$TOML" ]]; }
+mkdir_root() { mkdir -p "$(dirname "$TOML")"; }
+write_root() { printf '%s' "$2" > "$TOML"; }
+pkg_install() { echo "PKGINST:$@" >> "$LOG"; return 0; }
+wm_present() { return "${RD_TEST_WM_PRESENT:-1}"; }
+install_session_defaults
+echo "WARN=$SERVER_WM_WARN"
+echo "---TOML---"
+cat "$TOML" 2>/dev/null || echo "<no toml>"
+echo "---LOG---"
+cat "$LOG" 2>/dev/null || echo "<no pkg calls>"
+'''
+
+
+def test_help_lists_with_wm_flag():
+    r = _run(["--help"])
+    assert r.returncode == 0
+    assert "--with-wm" in r.stdout
+    assert "RD_WITH_WM" in r.stdout
+
+
+def test_with_wm_eq_arg_sets_var():
+    body = 'echo "WITH_WM=$WITH_WM"\n' 'echo "REQ=$WITH_WM_REQUESTED"\n'
+    r = _run_sourced(_snippet(body, args="--with-wm=xfce"))
+    assert r.returncode == 0, r.stderr
+    assert "WITH_WM=xfce" in r.stdout
+    assert "REQ=yes" in r.stdout
+
+
+def test_with_wm_bare_defaults_openbox():
+    body = 'echo "WITH_WM=$WITH_WM"\n' 'echo "REQ=$WITH_WM_REQUESTED"\n'
+    r = _run_sourced(_snippet(body, args="--with-wm"))
+    assert r.returncode == 0, r.stderr
+    assert "WITH_WM=openbox" in r.stdout
+    assert "REQ=yes" in r.stdout
+
+
+def test_with_wm_empty_eq_defaults_openbox():
+    body = 'echo "WITH_WM=$WITH_WM"\n' 'echo "REQ=$WITH_WM_REQUESTED"\n'
+    r = _run_sourced(_snippet(body, args="--with-wm="))
+    assert r.returncode == 0, r.stderr
+    assert "WITH_WM=openbox" in r.stdout
+    assert "REQ=yes" in r.stdout
+
+
+def test_rd_with_wm_env_sets_var():
+    body = 'echo "WITH_WM=$WITH_WM"\n' 'echo "REQ=$WITH_WM_REQUESTED"\n'
+    r = _run_sourced(_snippet(body), {"RD_WITH_WM": "xterm"})
+    assert r.returncode == 0, r.stderr
+    assert "WITH_WM=xterm" in r.stdout
+    assert "REQ=yes" in r.stdout
+
+
+def test_with_wm_does_not_swallow_next_flag():
+    # `--with-wm --component server` must treat --with-wm as bare (openbox)
+    # and leave --component for the parser.
+    body = 'echo "WITH_WM=$WITH_WM"\n' 'echo "COMP=$COMPONENT"\n'
+    r = _run_sourced(_snippet(body, args="--with-wm --component server"))
+    assert r.returncode == 0, r.stderr
+    assert "WITH_WM=openbox" in r.stdout
+    assert "COMP=server" in r.stdout
+
+
+def test_wm_package_mapping():
+    body = (
+        'DISTRO=ubuntu; echo "u-openbox=$(wm_package openbox)"\n'
+        'DISTRO=ubuntu; echo "u-plasma=$(wm_package plasma)"\n'
+        'DISTRO=ubuntu; echo "u-xfce=$(wm_package xfce)"\n'
+        'DISTRO=ubuntu; echo "u-xterm=$(wm_package xterm)"\n'
+        'DISTRO=fedora; echo "f-xfce=$(wm_package xfce)"\n'
+        'DISTRO=fedora; echo "f-openbox=$(wm_package openbox)"\n'
+        'DISTRO=ubuntu; echo "raw=$(wm_package i3-wm)"\n'
+    )
+    r = _run_sourced(_snippet(body))
+    assert r.returncode == 0, r.stderr
+    assert "u-openbox=openbox" in r.stdout
+    assert "u-plasma=plasma-desktop" in r.stdout
+    assert "u-xfce=xfce4" in r.stdout
+    assert "u-xterm=xterm" in r.stdout
+    assert "f-xfce=xfce4-session" in r.stdout
+    assert "f-openbox=openbox" in r.stdout
+    assert "raw=i3-wm" in r.stdout
+
+
+def test_wm_binary_mapping():
+    body = (
+        'echo "b-openbox=$(wm_binary openbox)"\n'
+        'echo "b-plasma=$(wm_binary plasma)"\n'
+        'echo "b-xfce=$(wm_binary xfce)"\n'
+        'echo "b-xterm=$(wm_binary xterm)"\n'
+        'echo "b-raw=$(wm_binary i3)"\n'
+    )
+    r = _run_sourced(_snippet(body))
+    assert r.returncode == 0, r.stderr
+    assert "b-openbox=openbox" in r.stdout
+    assert "b-plasma=plasmashell" in r.stdout
+    assert "b-xfce=xfce4-session" in r.stdout
+    assert "b-xterm=xterm" in r.stdout
+    assert "b-raw=i3" in r.stdout
+
+
+def test_install_session_defaults_creates_toml(tmp_path):
+    toml = tmp_path / "server.toml"
+    log = tmp_path / "pkg.log"
+    r = _run_sourced(_snippet(_SESSION_BODY, args="--with-wm=openbox"), {
+        "RD_TEST_TOML": str(toml),
+        "RD_TEST_LOG": str(log),
+        "RD_TEST_WM_PRESENT": "1",  # absent -> install path exercised
+    })
+    assert r.returncode == 0, r.stderr
+    assert "WARN=no" in r.stdout
+    assert "PKGINST:openbox" in r.stdout
+    assert 'backend = "x11"' in r.stdout
+    assert "session_geometry = [1920, 1080]" in r.stdout
+    assert 'window_manager = "openbox"' in r.stdout
+
+
+def test_install_session_defaults_idempotent_wm_present(tmp_path):
+    # WM already on PATH -> pkg_install must NOT be called, but server.toml
+    # is still generated on first run.
+    toml = tmp_path / "server.toml"
+    log = tmp_path / "pkg.log"
+    r = _run_sourced(_snippet(_SESSION_BODY, args="--with-wm=openbox"), {
+        "RD_TEST_TOML": str(toml),
+        "RD_TEST_LOG": str(log),
+        "RD_TEST_WM_PRESENT": "0",  # present
+    })
+    assert r.returncode == 0, r.stderr
+    assert "WARN=no" in r.stdout
+    assert "<no pkg calls>" in r.stdout
+    assert 'window_manager = "openbox"' in r.stdout
+
+
+def test_install_session_defaults_skips_existing_toml(tmp_path):
+    # Pre-existing server.toml must never be overwritten (idempotency).
+    toml = tmp_path / "server.toml"
+    toml.write_text('window_manager = "custom-wm"\nbackend = "wayland"\n')
+    log = tmp_path / "pkg.log"
+    r = _run_sourced(_snippet(_SESSION_BODY, args="--with-wm=openbox"), {
+        "RD_TEST_TOML": str(toml),
+        "RD_TEST_LOG": str(log),
+        "RD_TEST_WM_PRESENT": "0",  # present -> no pkg install either
+    })
+    assert r.returncode == 0, r.stderr
+    assert "WARN=no" in r.stdout
+    assert "<no pkg calls>" in r.stdout
+    assert 'window_manager = "custom-wm"' in r.stdout
+    assert 'backend = "wayland"' in r.stdout
+    assert 'window_manager = "openbox"' not in r.stdout
+
+
+def test_install_session_defaults_no_wm_sets_warn(tmp_path):
+    # No --with-wm: config untouched + black-screen warning flagged.
+    toml = tmp_path / "server.toml"
+    log = tmp_path / "pkg.log"
+    r = _run_sourced(_snippet(_SESSION_BODY), {
+        "RD_TEST_TOML": str(toml),
+        "RD_TEST_LOG": str(log),
+        "RD_TEST_WM_PRESENT": "0",
+    })
+    assert r.returncode == 0, r.stderr
+    assert "WARN=yes" in r.stdout
+    assert "<no toml>" in r.stdout
+    assert "<no pkg calls>" in r.stdout
+
+
+def test_install_session_defaults_no_wm_keeps_existing_toml(tmp_path):
+    # No --with-wm AND a server.toml already exists -> still untouched, warn.
+    toml = tmp_path / "server.toml"
+    toml.write_text('window_manager = "keep-me"\n')
+    log = tmp_path / "pkg.log"
+    r = _run_sourced(_snippet(_SESSION_BODY), {
+        "RD_TEST_TOML": str(toml),
+        "RD_TEST_LOG": str(log),
+        "RD_TEST_WM_PRESENT": "0",
+    })
+    assert r.returncode == 0, r.stderr
+    assert "WARN=yes" in r.stdout
+    assert 'window_manager = "keep-me"' in r.stdout
+
+
+def test_install_session_defaults_skipped_for_client_only(tmp_path):
+    # --component client: no server -> nothing happens, no warn.
+    body = _SESSION_BODY.replace("COMPONENT=server", "COMPONENT=client")
+    toml = tmp_path / "server.toml"
+    log = tmp_path / "pkg.log"
+    r = _run_sourced(_snippet(body, args="--with-wm=openbox"), {
+        "RD_TEST_TOML": str(toml),
+        "RD_TEST_LOG": str(log),
+        "RD_TEST_WM_PRESENT": "1",
+    })
+    assert r.returncode == 0, r.stderr
+    assert "WARN=no" in r.stdout
+    assert "<no toml>" in r.stdout
+    assert "<no pkg calls>" in r.stdout
+
+
+def test_install_session_defaults_skipped_off_linux(tmp_path):
+    # macOS/Windows: no-op even with --with-wm.
+    body = _SESSION_BODY.replace("OS=linux", "OS=macos")
+    toml = tmp_path / "server.toml"
+    log = tmp_path / "pkg.log"
+    r = _run_sourced(_snippet(body, args="--with-wm=openbox"), {
+        "RD_TEST_TOML": str(toml),
+        "RD_TEST_LOG": str(log),
+        "RD_TEST_WM_PRESENT": "1",
+    })
+    assert r.returncode == 0, r.stderr
+    assert "WARN=no" in r.stdout
+    assert "<no toml>" in r.stdout
+
+
+def test_uninstall_preserves_nonempty_user_config(tmp_path):
+    """--uninstall must NOT remove a non-empty ~/.config/ssh-remote-desktop
+    (user keys/hosts live there), but must remove our symlinks + install dir."""
+    import shutil
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg = home / ".config/ssh-remote-desktop"
+    cfg.mkdir(parents=True)
+    (cfg / "known_hosts").write_text("fake host key fingerprint\n")
+    installdir = tmp_path / "install"
+    installdir.mkdir()
+    (installdir / "marker").write_text("x")
+    bindir = home / ".local/bin"
+    bindir.mkdir(parents=True)
+    (bindir / "rd-server").symlink_to(installdir / "marker")
+
+    env = dict(os.environ)
+    env["SSH_REMOTE_DESKTOP_DIR"] = str(installdir)
+    env["HOME"] = str(home)
+    r = subprocess.run(["bash", INSTALL, "--uninstall"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+
+    assert (cfg / "known_hosts").exists(), "non-empty user config was wiped!"
+    assert cfg.exists(), "non-empty config dir was removed!"
+    assert not (bindir / "rd-server").exists(), "stale symlink not removed"
+    assert not installdir.exists(), "install dir not removed"
+
+
+def test_uninstall_removes_empty_etc_server_toml(tmp_path):
+    """--uninstall removes an EMPTY /etc/ssh-remote-desktop/server.toml (and
+    the dir when empty), mirroring the user-config policy. Skipped if the
+    path already exists so we never truncate a real operator config."""
+    import shutil
+    syscfg = "/etc/ssh-remote-desktop"
+    if os.path.exists(syscfg):
+        pytest.skip("/etc/ssh-remote-desktop already present; not touching it")
+    created = False
+    try:
+        os.makedirs(syscfg, exist_ok=False)
+        toml = os.path.join(syscfg, "server.toml")
+        open(toml, "w").close()  # empty file
+        created = True
+
+        home = tmp_path / "home"
+        home.mkdir()
+        env = dict(os.environ)
+        env["SSH_REMOTE_DESKTOP_DIR"] = str(tmp_path / "nope")
+        env["HOME"] = str(home)
+        r = subprocess.run(["bash", INSTALL, "--uninstall"], capture_output=True, text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        assert not os.path.exists(toml), "empty server.toml should be removed"
+        assert not os.path.exists(syscfg), "empty /etc/ssh-remote-desktop should be removed"
+        created = False
+    finally:
+        if created:
+            shutil.rmtree(syscfg, ignore_errors=True)
+
+
+def test_uninstall_keeps_nonempty_etc_server_toml(tmp_path):
+    """--uninstall must NOT remove a non-empty /etc/ssh-remote-desktop/server.toml
+    (operator-edited config). Skipped if the path already exists."""
+    import shutil
+    syscfg = "/etc/ssh-remote-desktop"
+    if os.path.exists(syscfg):
+        pytest.skip("/etc/ssh-remote-desktop already present; not touching it")
+    created = False
+    try:
+        os.makedirs(syscfg, exist_ok=False)
+        toml = os.path.join(syscfg, "server.toml")
+        with open(toml, "w") as f:
+            f.write('backend = "x11"\nwindow_manager = "openbox"\n')
+        created = True
+
+        home = tmp_path / "home"
+        home.mkdir()
+        env = dict(os.environ)
+        env["SSH_REMOTE_DESKTOP_DIR"] = str(tmp_path / "nope")
+        env["HOME"] = str(home)
+        r = subprocess.run(["bash", INSTALL, "--uninstall"], capture_output=True, text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        assert os.path.exists(toml), "non-empty server.toml must be preserved"
+        assert 'window_manager = "openbox"' in open(toml).read()
+        created = True  # still needs cleanup since uninstall kept it
+    finally:
+        if created:
+            shutil.rmtree(syscfg, ignore_errors=True)
