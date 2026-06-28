@@ -19,6 +19,11 @@
 #     ModuleNotFoundError on a clean machine that has no venv;
 #   * pam — the PAM password backend (also force-included so _HAVE_PAM=True);
 #   * Xlib / mss — the X11 capture backend, imported lazily by server.backend.
+#     Xlib.ext.{xtest,damage,xfixes} are force-included explicitly because
+#     x11.py imports them inside try/except at module top-level — Nuitka's
+#     static analysis can miss lazily-resolved extension modules, and without
+#     them XTEST input, XDamage tracking and XFixes cursor are silently
+#     disabled in the frozen binary (the _HAVE_XLIB=False path).
 #
 # --onefile-tempdir-spec places the onefile extraction in a predictable,
 # per-process cache dir instead of /tmp. /tmp is often a size-limited tmpfs
@@ -44,6 +49,10 @@ python -m nuitka \
   --include-package=msgpack \
   --include-package=numpy \
   --include-package=Xlib \
+  --include-package=Xlib.ext \
+  --include-module=Xlib.ext.xtest \
+  --include-module=Xlib.ext.damage \
+  --include-module=Xlib.ext.xfixes \
   --include-package=mss \
   --include-package=pam \
   --include-module=pam \

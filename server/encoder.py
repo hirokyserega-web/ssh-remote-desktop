@@ -153,6 +153,18 @@ class H264Encoder(Encoder):
         except Exception:
             pass
 
+    def set_fps(self, fps: int) -> None:
+        super().set_fps(fps)
+        # Push the new framerate into the CodecContext so the encoder's
+        # timestamp pacing / PTS follows the adaptation, not just the capture
+        # loop's sleep period. The GOP ('g' option) is set at encoder init and
+        # can't be changed mid-stream in x264, but the framerate property is
+        # live and governs how PyAV stamps output packets.
+        try:
+            self._cc.framerate = self.fps
+        except Exception:
+            pass
+
     def encode(self, frame: Frame, cursor: CursorImage | None = None):
         if not _HAVE_NUMPY:
             return []

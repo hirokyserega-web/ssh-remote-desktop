@@ -207,9 +207,14 @@ class WaylandBackend(DisplayBackend):
         if self._uinput.keyboard is not None and _HAVE_EVDEV and code is not None:
             self._uinput.keyboard.write(e.EV_KEY, code, 1 if down else 0)
             self._uinput.keyboard.syn()
-        elif down:
+        elif down and code is not None:
             # ydotool key needs press/release pair; only emit on logical down.
+            # Guard code is not None: keysym_to_evdev returns None for
+            # unmapped keys, and ydotool would otherwise receive "None:1"
+            # (a literal string) and silently fail or error out.
             self._ydotool("key", f"{code}:1", f"{code}:0")
+        elif down and code is None:
+            log.debug("wayland inject_key: unmapped keysym %r, skipping", keysym)
 
     def _ydotool(self, *args: str) -> None:
         try:

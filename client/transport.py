@@ -158,9 +158,17 @@ class Transport:
 
     def get_stats(self):
         """Return a snapshot of RTT/loss stats (thread-safe)."""
+        # Floor the denominator at 5 so a cold start (1-2 pings) does not
+        # report a huge loss spike in the UI — mirrors the floor used by
+        # _send_stats so both paths agree.
+        if self._pings_sent:
+            sent = max(self._pings_sent, 5)
+            loss = max(0.0, (sent - self._pongs_recv) / sent)
+        else:
+            loss = 0.0
         return {
             "rtt_ms": sum(self._rtt_samples) / len(self._rtt_samples) if self._rtt_samples else 0.0,
-            "loss": max(0.0, (self._pings_sent - self._pongs_recv) / self._pings_sent) if self._pings_sent else 0.0,
+            "loss": loss,
             "pings_sent": self._pings_sent,
             "pongs_recv": self._pongs_recv,
         }

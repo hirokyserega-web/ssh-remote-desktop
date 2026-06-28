@@ -21,6 +21,7 @@ import asyncio
 import logging
 import os
 import threading
+from contextlib import contextmanager
 
 try:
     import asyncssh
@@ -34,6 +35,51 @@ from .files import FileJail
 from .session import Session, UserInfo
 
 log = logging.getLogger("rd.broker")
+
+
+# Sentinel for "os.environ didn't have this key" — same idea as in x11.py but
+# local to broker to avoid a cross-module coupling.
+_ENV_UNSET = object()
+
+
+@contextmanager
+def _dropped_privileges(uid: int, gid: int):
+    """Temporarily drop effective UID/GID to ``uid``/``gid``, then restore.
+
+    The broker runs as root (needed for PAM, Xvfb, setuid). SFTP file
+    operations must run as the connecting user so files in ``~user/shared``
+    are owned by that user (not root) and filesystem permissions are
+    respected. asyncssh's SFTPServer runs in the broker's asyncio loop
+    (single thread); the path-based I/O methods below are synchronous
+    (no ``await`` between the drop and the syscall), so dropping effective
+    privileges around each call is safe — no other coroutine runs mid-call.
+
+    When the broker is not root (dev/test with ``run_as_user=False``), this
+    is a no-op: ``seteuid`` would raise and we have nothing to drop from.
+    """
+    if os.geteuid() != 0 or (uid == 0 and gid == 0):
+        yield
+        return
+    saved_euid = os.geteuid()
+    saved_egid = os.getegid()
+    dropped = False
+    try:
+        # Drop GID first (still root, can change group), then UID.
+        os.setegid(gid)
+        os.seteuid(uid)
+        dropped = True
+        yield
+    finally:
+        # Restore UID first (regain root), then GID — only if we dropped.
+        if dropped:
+            try:
+                os.seteuid(saved_euid)
+            except OSError:
+                pass
+            try:
+                os.setegid(saved_egid)
+            except OSError:
+                pass
 
 
 class PortInUseError(OSError):
@@ -146,14 +192,33 @@ class Broker:
             if len(self._sessions) >= self.cfg.max_sessions:
                 raise RuntimeError("session limit reached")
             from .backend import detect_backend_kind
-            kind = detect_backend_kind(forced=self.cfg.backend)
+            # Detect the backend from a clean (empty) env, NOT os.environ.
+            # The broker's own XDG_SESSION_TYPE / DISPLAY are irrelevant to the
+            # per-connection Xvfb/Wayland session we are about to create; under
+            # sudo or systemd they can mislead 'auto' into picking the
+            # experimental Wayland backend (placeholder frames). With an empty
+            # env, 'auto' defaults to 'x11' (Xvfb), the working headless path.
+            kind = detect_backend_kind(env={}, forced=self.cfg.backend)
             session = Session(self.cfg, user, backend_kind=kind,
                               geometry=geometry, persistent=persistent)
-        session.start()  # outside the lock (spawns processes)
-        with self._lock:
+            # Reserve the slot NOW (under the lock) so two concurrent
+            # connections can't both pass the max_sessions check and then both
+            # insert, exceeding the limit. session.start() is slow (spawns
+            # processes) so it runs outside the lock; if it fails we remove
+            # the reservation in the except branch below.
             self._sessions[session.session_id] = session
             if persistent:
                 self._persistent[(user.name, f"{geometry[0]}x{geometry[1]}")] = session
+        try:
+            session.start()  # outside the lock (spawns processes)
+        except Exception:
+            with self._lock:
+                self._sessions.pop(session.session_id, None)
+                if persistent:
+                    self._persistent.pop(
+                        (user.name, f"{geometry[0]}x{geometry[1]}"), None
+                    )
+            raise
         return session
 
     def release_session(self, session: Session):
@@ -197,13 +262,43 @@ class Broker:
     def _make_sftp_factory(self):
         broker = self
 
+        # Path-based SFTP operations that touch the filesystem and therefore
+        # must run as the connecting user (not root). File-object operations
+        # (read/write/close/fstat/...) operate on already-opened file
+        # descriptors and do NOT need privilege changes — the fd was opened
+        # with the user's EUID during open(), and the kernel checks
+        # permissions at open time, not at read/write time.
+        _PRIVILEGED_PATH_OPS = (
+            "open", "open56",
+            "stat", "lstat", "setstat", "lsetstat", "statvfs",
+            "listdir",
+            "mkdir", "rmdir", "remove",
+            "rename", "posix_rename",
+            "readlink", "symlink", "link",
+        )
+
         class JailedSFTP(asyncssh.SFTPServer):
             def __init__(self, chan):
                 conn = chan.get_extra_info("connection")
                 username = conn.get_extra_info("username")
-                user = UserInfo(username)
-                jail = broker.jail_for(user)
+                self._user = UserInfo(username)
+                jail = broker.jail_for(self._user)
                 super().__init__(chan, chroot=str(jail.root))
+
+            def __getattr__(self, name):
+                # Intercept path-based filesystem ops: run the parent's
+                # implementation with effective privileges dropped to the
+                # connecting user so files are created/owned by that user
+                # and permission checks reflect their view, not root's.
+                if name in _PRIVILEGED_PATH_OPS:
+                    parent = getattr(super(JailedSFTP, self), name)
+
+                    def wrapper(*args, **kwargs):
+                        with _dropped_privileges(self._user.uid, self._user.gid):
+                            return parent(*args, **kwargs)
+
+                    return wrapper
+                raise AttributeError(name)
 
         return JailedSFTP
 

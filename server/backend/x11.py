@@ -25,6 +25,11 @@ from ..keymap import keysym_to_x11
 
 log = logging.getLogger("rd.backend.x11")
 
+# Sentinel for "this env var was not set in os.environ before start()" so
+# stop() can remove it (rather than restoring a None that would set the key
+# to the string "None").
+_UNSET = object()
+
 # Optional Xlib import -- kept soft so the module imports on non-X11 build hosts.
 try:
     from Xlib import X, display as xdisplay
@@ -69,20 +74,51 @@ class X11Backend(DisplayBackend):
         self._have_xfixes = False
         self._last_cursor_serial = -1
         self._w, self._h = geometry
-        self._saved_xauthority = None
+        # Saved os.environ values for DISPLAY / XAUTHORITY, restored in stop().
+        # Maps key -> previous value (or _UNSET when the key was absent).
+        self._saved_env: dict = {}
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
+        # Export the session's DISPLAY and XAUTHORITY into os.environ BEFORE
+        # any capture library is initialised. Both python-xlib's
+        # xdisplay.Display() and mss.mss() read the X connection parameters
+        # from os.environ (the process-global env), NOT from self.env — so
+        # without this export they connect to the broker's host display
+        # (typically :0 under sudo), which the session has no cookie for,
+        # producing "Authorization required" / XError and a dead stream.
+        #
+        # This must happen UNCONDITIONALLY, not only when python-xlib is
+        # available: the Nuitka onefile build ships without python-xlib, so
+        # the old code skipped the export in the `if not _HAVE_XLIB` branch
+        # and mss grabbed the wrong display.
+        self._saved_env = {}
+        for key in ("DISPLAY", "XAUTHORITY"):
+            val = self.env.get(key)
+            if val:
+                self._saved_env[key] = os.environ.get(key, _UNSET)
+                os.environ[key] = val
+        try:
+            self._start_capture()
+        except Exception as exc:
+            self._restore_env()
+            display = self.env.get("DISPLAY", "?")
+            log.error(
+                "не удалось подключиться к дисплею сессии %s: %s. "
+                "Проверьте, что Xvfb запущен и доступен этому процессу "
+                "(cookie XAUTHORITY должен совпадать).",
+                display, exc,
+            )
+            raise
+
+    def _start_capture(self) -> None:
+        """Open the X connection and capture pipeline (after env export)."""
         if not _HAVE_XLIB:
             # We can still capture with mss, but input/cursor need Xlib.
             log.warning("python-xlib unavailable; input injection disabled")
             self._init_mss()
             return
         disp_name = self.env.get("DISPLAY", ":0")
-        xauth_path = self.env.get("XAUTHORITY")
-        if xauth_path:
-            self._saved_xauthority = os.environ.get("XAUTHORITY")
-            os.environ["XAUTHORITY"] = xauth_path
         self._dpy = xdisplay.Display(disp_name)
         self._screen = self._dpy.screen()
         self._root = self._screen.root
@@ -97,13 +133,27 @@ class X11Backend(DisplayBackend):
         log.info("X11 backend started on %s (%dx%d)", disp_name, self._w, self._h)
 
     def _init_mss(self):
-        if _HAVE_MSS:
-            self._mss = mss.mss()
-            # monitor[0] is the virtual "all monitors" rect; [1] is primary.
-            mons = self._mss.monitors
-            self._mss_monitor = mons[1] if len(mons) > 1 else mons[0]
-            self._w = self._mss_monitor["width"]
-            self._h = self._mss_monitor["height"]
+        if not _HAVE_MSS:
+            return
+        # mss reads DISPLAY from os.environ by default; pass the session
+        # display explicitly so capture targets the Xvfb session (:N from
+        # self.env), not the host :0. Fall back to os.environ (which start()
+        # already exported self.env into) only when self.env has no DISPLAY.
+        display = self.env.get("DISPLAY") or os.environ.get("DISPLAY")
+        try:
+            if display:
+                self._mss = mss.mss(display=display)
+            else:
+                self._mss = mss.mss()
+        except Exception as exc:
+            raise RuntimeError(
+                f"mss: не удалось подключиться к дисплею {display!r}: {exc}"
+            ) from exc
+        # monitor[0] is the virtual "all monitors" rect; [1] is primary.
+        mons = self._mss.monitors
+        self._mss_monitor = mons[1] if len(mons) > 1 else mons[0]
+        self._w = self._mss_monitor["width"]
+        self._h = self._mss_monitor["height"]
 
     def _init_damage(self):
         try:
@@ -136,6 +186,15 @@ class X11Backend(DisplayBackend):
             log.debug("XFixes unavailable: %s", exc)
             self._have_xfixes = False
 
+    def _restore_env(self):
+        """Restore os.environ DISPLAY / XAUTHORITY saved in start()."""
+        for key, saved in self._saved_env.items():
+            if saved is _UNSET:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = saved
+        self._saved_env = {}
+
     def stop(self) -> None:
         try:
             if self._mss is not None:
@@ -147,10 +206,7 @@ class X11Backend(DisplayBackend):
                 self._dpy.close()
         except Exception:
             pass
-        if self._saved_xauthority is not None:
-            os.environ["XAUTHORITY"] = self._saved_xauthority
-        elif "XAUTHORITY" in os.environ:
-            del os.environ["XAUTHORITY"]
+        self._restore_env()
 
     # -- geometry ----------------------------------------------------------
     def screen_size(self) -> tuple[int, int]:
@@ -160,7 +216,22 @@ class X11Backend(DisplayBackend):
     def capture(self) -> Frame | None:
         if self._mss is None:
             return None
-        shot = self._mss.grab(self._mss_monitor)
+        try:
+            shot = self._mss.grab(self._mss_monitor)
+        except Exception as exc:
+            # mss raises XError / DisplayConnectionError when the Xvfb
+            # session died or the cookie no longer matches. Log a clear,
+            # actionable message instead of a raw traceback flooding the
+            # video loop, and return None so the connection handler can
+            # tear the session down cleanly.
+            display = self.env.get("DISPLAY", "?")
+            log.error(
+                "захват кадра с дисплея %s не удался: %s. "
+                "Возможно, Xvfb-сессия завершилась или cookie XAUTHORITY "
+                "более не действителен; перезапустите сессию.",
+                display, exc,
+            )
+            return None
         buf = bytes(shot.raw)  # BGRA
         damage = self._collect_damage()
         cx, cy = self._pointer_pos()
