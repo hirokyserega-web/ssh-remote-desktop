@@ -33,6 +33,11 @@ import sys
 import traceback
 from pathlib import Path
 
+try:
+    from common.updater import run_update
+except ImportError:
+    run_update = None
+
 
 def _config_dir() -> Path:
     """Where per-user config + the launch log live."""
@@ -150,12 +155,22 @@ def build_parser():
     p.add_argument("--no-clipboard", dest="clipboard_enabled", action="store_false", default=None)
     p.add_argument("--keygen", action="store_true",
                    help="open only the SSH key generator and exit")
+    p.add_argument(
+        "--update", action="store_true",
+        help="check for updates and install the latest version",
+    )
     p.add_argument("--log-level", dest="log_level")
     return p
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if getattr(args, 'update', False):
+        if run_update:
+            return run_update()
+        else:
+            print("Updater not available.", file=sys.stderr)
+            return 1
     from common.config import load_client_config
     overrides = {k: v for k, v in vars(args).items()
                  if k not in ("config", "keygen") and v is not None}

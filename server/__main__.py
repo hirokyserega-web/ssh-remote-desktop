@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 
 from common.config import load_server_config
+from common.updater import run_update
 
 from .auth import warn_if_pam_unavailable, warn_if_privileges_insufficient
 from .broker import Broker, HostKeyError, PortInUseError
@@ -136,6 +137,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status", action="store_true", help="print daemon state and exit")
 
     # --- systemd unit management -------------------------------------------
+    p.add_argument(
+        "--update", action="store_true",
+        help="check for updates and install the latest version",
+    )
     svc = p.add_mutually_exclusive_group()
     svc.add_argument(
         "--install-service", dest="install_service", action="store_true",
@@ -574,6 +579,8 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
     # ----- pure side-effect commands (no config, no daemon) --------------- #
+    if args.update:
+        return run_update()
     if args.status:
         s = status(args.pidfile or default_pidfile())
         for line in s.as_lines():
