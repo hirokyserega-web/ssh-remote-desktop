@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.18] - 2026-06-29
+
 ## [1.4.17] - 2026-06-29
 
 ### Changed
@@ -14,6 +16,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 
 ## [Unreleased]
+
+## [1.4.18] - 2026-06-29
 
 ## [1.4.17] - 2026-06-29
 
@@ -24,11 +28,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.18] - 2026-06-29
+
 ## [1.4.17] - 2026-06-29
 
 ## [1.4.16] - 2026-06-29
 
 ## [Unreleased]
+
+## [1.4.18] - 2026-06-29
 
 ## [1.4.17] - 2026-06-29
 
