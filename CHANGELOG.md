@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Optimized CI release pipeline: Linux components (client, server, server-gui) are now built in parallel jobs.
+- Added caching for Nuitka and ccache to significantly reduce subsequent build times.
+
+
+## [Unreleased]
+
 ## [1.4.16] - 2026-06-29
 
 ### Added
