@@ -6,12 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.16] - 2026-06-29
+
 ### Added
 - New `--update` flag for both `rd-server` and `rd-client` to automatically download and install the latest version.
 
 ## [Unreleased]
 
+## [1.4.16] - 2026-06-29
+
 ## [Unreleased]
+
+## [1.4.16] - 2026-06-29
 
 ## [1.4.15] - 2026-06-29
 
