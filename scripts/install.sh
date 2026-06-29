@@ -623,11 +623,6 @@ write_root() {  # $1 = absolute path, $2 = file content
       printf '%s' "$2" | sudo -n tee "$1" >/dev/null
     fi
   fi
-}" -eq 0 ]]; then
-    printf '%s' "$2" > "$1"
-  else
-    printf '%s' "$2" | sudo -n tee "$1" >/dev/null
-  fi
 }
 
 # Install a window manager for the server (X11 backend) and generate
