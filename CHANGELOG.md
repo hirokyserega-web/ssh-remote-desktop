@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.15] - 2026-06-29
+
 ### Fixed
 - Fixed "black screen" error when `window_manager` is set to `plasma` but the binary is actually `startplasma-x11`.
 - Added automatic redirection for `plasma` -> `startplasma-x11` and `gnome` -> `gnome-session`.
