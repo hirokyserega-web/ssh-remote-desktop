@@ -330,9 +330,23 @@ class Session:
 
     def _maybe_start_wm(self, env: dict):
         wm = (self.cfg.window_manager or "").strip()
-        if wm and self.backend_kind == "x11":
-            self._spawn(wm.split(), env)
+        if not wm or self.backend_kind != "x11":
+            return
 
+        cmd_parts = wm.split()
+        exe = cmd_parts[0]
+        if not shutil.which(exe):
+            if exe == "plasma" and shutil.which("startplasma-x11"):
+                log.info("Executable 'plasma' not found, redirecting to 'startplasma-x11'")
+                cmd_parts[0] = "startplasma-x11"
+            elif exe == "gnome" and shutil.which("gnome-session"):
+                log.info("Executable 'gnome' not found, redirecting to 'gnome-session'")
+                cmd_parts[0] = "gnome-session"
+            else:
+                log.error("Window manager executable '%s' not found in PATH. Check your config.", exe)
+                return
+
+        self._spawn(cmd_parts, env)
     def _spawn(self, cmd: list[str], env: dict):
         log.debug("spawn (%s): %s", self.user.name, " ".join(cmd))
         try:

@@ -50,7 +50,7 @@ class ServerConfig:
 
     # X11 backend.
     xvfb_bin: str = "Xvfb"
-    window_manager: str = ""          # optional WM/DE command per session
+    window_manager: str = ""          # optional WM/DE command (e.g. "startplasma-x11", "openbox")
 
     # Wayland backend.
     wayland_compositor: str = "sway"  # "sway" | "weston" | "kwin" | "gnome"

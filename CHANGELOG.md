@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is
 loosely [Keep a Changelog](https://keepachangelog.com/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Fixed "black screen" error when `window_manager` is set to `plasma` but the binary is actually `startplasma-x11`.
+- Added automatic redirection for `plasma` -> `startplasma-x11` and `gnome` -> `gnome-session`.
+- Added validation for window manager executable existence in PATH with clear error logging.
+
 ## [1.4.13] - 2026-06-25
 
 ### Fixed
