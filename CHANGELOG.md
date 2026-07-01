@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Server window manager autodetection and auto-start configuration for X11 sessions.
+- Support for launching tint2 panel, terminals, and xsetroot background color in bare window manager setups.
+- Uniform XDG_RUNTIME_DIR handling with automatic /tmp/rd-runtime-<uid> fallback and permission locking.
+- Display capture protection with auto-termination when mss is missing or when capture fails consecutively 30 times.
+- Extended dependency management and diagnostics in installation script (scripts/install.sh).
+- Standalone executable smoke-testing to verify build robustness (build_server_linux.sh).
+
 ## [1.4.19] - 2026-06-29
 
 ## [1.4.18] - 2026-06-29
