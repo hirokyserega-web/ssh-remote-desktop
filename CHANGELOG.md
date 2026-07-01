@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.20] - 2026-07-01
+
 ### Added
 - Server window manager autodetection and auto-start configuration for X11 sessions.
 - Support for launching tint2 panel, terminals, and xsetroot background color in bare window manager setups.
@@ -27,6 +29,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.20] - 2026-07-01
+
 ## [1.4.19] - 2026-06-29
 
 ## [1.4.18] - 2026-06-29
@@ -40,6 +44,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.20] - 2026-07-01
+
 ## [1.4.19] - 2026-06-29
 
 ## [1.4.18] - 2026-06-29
@@ -49,6 +55,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [1.4.16] - 2026-06-29
 
 ## [Unreleased]
+
+## [1.4.20] - 2026-07-01
 
 ## [1.4.19] - 2026-06-29
 
