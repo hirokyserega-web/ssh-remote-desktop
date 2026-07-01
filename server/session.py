@@ -62,6 +62,34 @@ class UserInfo:
         self.home = rec.pw_dir
         self.shell = rec.pw_shell
 
+        # Determine and prepare XDG_RUNTIME_DIR
+        runtime = f"/run/user/{self.uid}"
+        is_writable = False
+        if os.path.isdir(runtime) and os.access(runtime, os.W_OK):
+            is_writable = True
+        else:
+            try:
+                os.makedirs(runtime, exist_ok=True)
+                if os.access(runtime, os.W_OK):
+                    is_writable = True
+            except Exception:
+                pass
+
+        if not is_writable:
+            runtime = f"/tmp/rd-runtime-{self.uid}"
+            try:
+                os.makedirs(runtime, exist_ok=True)
+            except Exception:
+                pass
+        
+        try:
+            os.chmod(runtime, 0o700)
+            os.chown(runtime, self.uid, self.gid)
+        except PermissionError:
+            pass
+        
+        self.runtime_dir = runtime
+
     def base_env(self, extra: dict | None = None) -> dict:
         env = {
             "HOME": self.home,
@@ -69,7 +97,7 @@ class UserInfo:
             "LOGNAME": self.name,
             "SHELL": self.shell or "/bin/sh",
             "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin",
-            "XDG_RUNTIME_DIR": f"/run/user/{self.uid}",
+            "XDG_RUNTIME_DIR": self.runtime_dir,
         }
         if extra:
             env.update(extra)
@@ -218,14 +246,7 @@ class Session:
                 f"xorg-server-xvfb; Fedora: sudo dnf install xorg-x11-server-Xvfb."
             )
         # Per-session XAUTHORITY cookie (shared across display-number retries).
-        runtime = f"/run/user/{self.user.uid}"
-        xauth_dir = runtime if os.path.isdir(runtime) else f"/tmp/rd-{self.user.name}"
-        os.makedirs(xauth_dir, exist_ok=True)
-        try:
-            os.chown(xauth_dir, self.user.uid, self.user.gid)
-        except PermissionError:
-            pass
-        self._xauth = os.path.join(xauth_dir, f"Xauthority-{self.session_id}")
+        self._xauth = os.path.join(self.user.runtime_dir, f"Xauthority-{self.session_id}")
         cookie = secrets.token_hex(16)
 
         # Try candidate display numbers until one actually comes up. Xvfb's own
@@ -266,21 +287,7 @@ class Session:
     def _start_wayland(self) -> dict:
         idx = _free_display_number(1, 100)
         self.wayland_display = f"wayland-{idx}"
-        runtime = f"/run/user/{self.user.uid}"
-        # Mirror the x11 path's defensive fallback: /run/user/<uid> may be
-        # unwritable when the server isn't root (CI, restricted /run), so fall
-        # back to a per-user temp dir so the compositor still gets a place for
-        # its socket instead of crashing on makedirs before anything starts.
-        try:
-            os.makedirs(runtime, exist_ok=True)
-        except (PermissionError, OSError):
-            runtime = f"/tmp/rd-runtime-{self.user.uid}"
-            os.makedirs(runtime, exist_ok=True)
-        try:
-            os.chown(runtime, self.user.uid, self.user.gid)
-            os.chmod(runtime, 0o700)
-        except PermissionError:
-            pass
+        runtime = self.user.runtime_dir
         env = self.user.base_env({
             "WAYLAND_DISPLAY": self.wayland_display,
             "XDG_RUNTIME_DIR": runtime,
@@ -329,24 +336,99 @@ class Session:
         return env
 
     def _maybe_start_wm(self, env: dict):
-        wm = (self.cfg.window_manager or "").strip()
-        if not wm or self.backend_kind != "x11":
+        if self.backend_kind != "x11":
             return
 
-        cmd_parts = wm.split()
-        exe = cmd_parts[0]
-        if not shutil.which(exe):
-            if exe == "plasma" and shutil.which("startplasma-x11"):
-                log.info("Executable 'plasma' not found, redirecting to 'startplasma-x11'")
-                cmd_parts[0] = "startplasma-x11"
-            elif exe == "gnome" and shutil.which("gnome-session"):
-                log.info("Executable 'gnome' not found, redirecting to 'gnome-session'")
-                cmd_parts[0] = "gnome-session"
-            else:
-                log.error("Window manager executable '%s' not found in PATH. Check your config.", exe)
-                return
+        wm = (self.cfg.window_manager or "").strip()
+        wm_to_start = None
+        is_bare_wm = False
 
-        self._spawn(cmd_parts, env)
+        if wm:
+            cmd_parts = wm.split()
+            exe = cmd_parts[0]
+            if not shutil.which(exe):
+                if exe == "plasma" and shutil.which("startplasma-x11"):
+                    log.info("Executable 'plasma' not found, redirecting to 'startplasma-x11'")
+                    cmd_parts[0] = "startplasma-x11"
+                    wm_to_start = cmd_parts
+                elif exe == "gnome" and shutil.which("gnome-session"):
+                    log.info("Executable 'gnome' not found, redirecting to 'gnome-session'")
+                    cmd_parts[0] = "gnome-session"
+                    wm_to_start = cmd_parts
+                else:
+                    log.error("Window manager executable '%s' not found in PATH. Check your config.", exe)
+                    return
+            else:
+                wm_to_start = cmd_parts
+            
+            if wm_to_start:
+                log.info("Starting configured window manager/session: %s", " ".join(wm_to_start))
+        else:
+            # Auto-detection
+            candidates = [
+                "startxfce4", "startplasma-x11", "gnome-session",
+                "mate-session", "cinnamon-session", "openbox-session",
+                "openbox", "icewm-session", "icewm", "fluxbox"
+            ]
+            for cand in candidates:
+                if shutil.which(cand):
+                    wm_to_start = [cand]
+                    if cand in ("openbox-session", "openbox", "icewm-session", "icewm", "fluxbox"):
+                        is_bare_wm = True
+                    log.info("Starting auto-detected window manager/session: %s", cand)
+                    break
+
+        if not wm_to_start:
+            log.warning("сессия пуста, будет чёрный экран, задайте window_manager в server.toml")
+            return
+
+        # Start the WM
+        self._spawn(wm_to_start, env)
+
+        # If bare WM, spawn helpers
+        if is_bare_wm:
+            if shutil.which("tint2"):
+                log.info("Starting panel: tint2")
+                self._spawn(["tint2"], env)
+            
+            terminal = None
+            for term in ("xterm", "xfce4-terminal"):
+                if shutil.which(term):
+                    terminal = term
+                    break
+            if terminal:
+                log.info("Starting terminal: %s", terminal)
+                self._spawn([terminal], env)
+            
+            if shutil.which("xsetroot"):
+                log.info("Starting wallpaper tool: xsetroot")
+                self._spawn(["xsetroot", "-solid", "#2e3440"], env)
+
+        # Wait for the WM/session to be ready (at least one managed window OR timeout ~2s)
+        self._wait_for_window_or_timeout()
+
+    def _wait_for_window_or_timeout(self):
+        if self.backend_kind != "x11" or not self.backend:
+            return
+        
+        dpy = getattr(self.backend, "_dpy", None)
+        if not dpy:
+            # Fallback when python-xlib is not available
+            time.sleep(2.0)
+            return
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                dpy.sync()
+                root = dpy.screen().root
+                children = root.query_tree().children
+                if children:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+
     def _spawn(self, cmd: list[str], env: dict):
         log.debug("spawn (%s): %s", self.user.name, " ".join(cmd))
         try:

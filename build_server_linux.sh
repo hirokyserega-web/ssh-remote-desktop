@@ -57,3 +57,8 @@ python -m nuitka \
   --include-package=pam \
   --include-module=pam \
   rd_server_entry.py
+
+# Smoke check: verify that the compiled binary can run and imports correctly
+echo "Running smoke check on compiled server binary..."
+dist/rd-server --help > /dev/null
+echo "Smoke check passed successfully!"

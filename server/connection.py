@@ -162,12 +162,14 @@ class ConnectionHandler:
     async def _video_loop(self):
         backend = self.session.backend
         loop = asyncio.get_running_loop()
+        consecutive_none = 0
         try:
             while self._running:
                 frame_period = 1.0 / max(1, self._fps)
                 t0 = loop.time()
                 frame = await loop.run_in_executor(None, backend.capture)
                 if frame is not None:
+                    consecutive_none = 0
                     cursor = None
                     if self.cfg.cursor_mode == "embedded":
                         cursor = await loop.run_in_executor(None, backend.cursor)
@@ -179,6 +181,13 @@ class ConnectionHandler:
                         if self.encoder.is_image_codec:
                             flags |= Flags.DELTA
                         self.mux.send_video(data, flags)
+                else:
+                    consecutive_none += 1
+                    if consecutive_none >= 30:
+                        log.error("Display capture failed 30 times consecutively. Terminating session.")
+                        self._send_control({"t": "error", "msg": "Display capture failed consecutively. Session terminated."})
+                        self._stop_evt.set()
+                        break
                 elapsed = loop.time() - t0
                 await asyncio.sleep(max(0, frame_period - elapsed))
         except asyncio.CancelledError:

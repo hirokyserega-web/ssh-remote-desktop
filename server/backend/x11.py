@@ -134,7 +134,8 @@ class X11Backend(DisplayBackend):
 
     def _init_mss(self):
         if not _HAVE_MSS:
-            return
+            from server.session import DisplayServerError
+            raise DisplayServerError("не установлен пакет python-xlib/mss — захват экрана невозможен")
         # mss reads DISPLAY from os.environ by default; pass the session
         # display explicitly so capture targets the Xvfb session (:N from
         # self.env), not the host :0. Fall back to os.environ (which start()

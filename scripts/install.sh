@@ -468,6 +468,14 @@ setup_venv() {
     pip install -r "$TARGET_DIR/requirements-linux.txt" || warn "Some Linux-only deps failed to install; server PAM/Wayland may be limited."
   fi
   pip install -e "$TARGET_DIR"
+
+  # Check that mss and python-xlib are importable inside the venv
+  log "Verifying Python dependencies inside virtual environment..."
+  if ! "$TARGET_DIR/.venv/bin/python" -c "import mss; import Xlib"; then
+    err "Validation failed: mss and/or python-xlib could not be imported inside the virtual environment!"
+    exit 1
+  fi
+  log "Python dependencies verified successfully."
 }
 
 # ---- system deps (source path) ---------------------------------------------
@@ -489,6 +497,7 @@ install_system_deps() {
         pkg-config libwayland-dev \
         xvfb xauth xclip openssh-client openssh-server ffmpeg \
         xdg-utils dbus-x11 \
+        x11-xserver-utils x11-utils xfce4 xfce4-terminal openbox tint2 xterm libx11-6 libxext6 libxfixes3 libxdamage1 libxtst6 \
         || true
       ;;
     fedora|rhel|centos|rocky|almalinux)
@@ -500,6 +509,7 @@ install_system_deps() {
         mesa-libEGL-devel dbus-devel \
         xorg-x11-server-Xvfb xorg-x11-xauth xclip \
         openssh-server ffmpeg xdg-utils \
+        xorg-x11-xinit xorg-x11-utils xfce4-session xfce4-terminal openbox tint2 xterm libX11 libXext libXfixes libXdamage libXtst \
         || true
       ;;
     arch|manjaro|endeavouros|garuda|arcolinux)
@@ -512,6 +522,16 @@ install_system_deps() {
         pkgconf \
         xorg-server-xvfb xorg-xauth xclip \
         openssh ffmpeg xdg-utils \
+        xorg-xsetroot xorg-xprop xorg-xwininfo xfce4 xfce4-terminal openbox tint2 xterm libx11 libxext libxfixes libxdamage libxtst \
+        || true
+      ;;
+    opensuse*|sles)
+      pkg_install \
+        python3 python3-pip python3-devel gcc make \
+        openssl-devel libffi-devel \
+        xorg-x11-server-extra xorg-x11-xauth xclip \
+        openssh ffmpeg xdg-utils \
+        xorg-x11-utils xfce4-session xfce4-terminal openbox tint2 xterm libX11-6 libXext6 libXfixes3 libXdamage1 libXtst6 \
         || true
       ;;
     alpine)
@@ -520,6 +540,7 @@ install_system_deps() {
         qt6-qtbase qt6-qtwayland libxkbcommon-x11 wayland-libs-client \
         pkgconfig wayland-dev \
         xvfb-xauth xclip openssh ffmpeg dbus-x11 \
+        xvfb xauth openbox tint2 xterm xsetroot libx11 libxext libxfixes libxdamage libxtst xfce4 xfce4-terminal \
         || true
       ;;
     *)
@@ -530,6 +551,7 @@ install_system_deps() {
     ubuntu|debian|linuxmint|pop) pkg_install python3-pam || pkg_install libpam0g-dev || true;;
     fedora|centos|rhel|rocky|almalinux) pkg_install python-pam pam-devel || true;;
     arch|manjaro|endeavouros|garuda|arcolinux) pkg_install python-pam || true;;
+    opensuse*|sles) pkg_install python-pam || true;;
     alpine) pkg_install py3-pam || true;;
   esac
 }
@@ -670,6 +692,13 @@ install_session_defaults() {
   local wm="$WITH_WM"
   if [[ -z "$wm" ]]; then wm="openbox"; fi
 
+  local wm_cmd="$wm"
+  case "$wm" in
+    xfce)   wm_cmd="startxfce4";;
+    plasma) wm_cmd="startplasma-x11";;
+    openbox) wm_cmd="openbox";;
+  esac
+
   local pkg bin
   pkg="$(wm_package "$wm")"
   bin="$(wm_binary "$wm")"
@@ -689,7 +718,7 @@ install_session_defaults() {
   # Generate server.toml ONLY when it does not exist; never overwrite an
   # operator-edited config (idempotency + safe re-runs).
   if exists_root "$server_toml"; then
-    warn "$server_toml already exists -- leaving it untouched. Edit it manually if you want window_manager = \"$wm\"."
+    warn "$server_toml already exists -- leaving it untouched. Edit it manually if you want window_manager = \"$wm_cmd\"."
     SERVER_WM_WARN="no"
     return 0
   fi
@@ -705,14 +734,14 @@ install_session_defaults() {
 # Safe to edit: re-running the installer will NOT overwrite this file.
 backend = "x11"
 session_geometry = [1920, 1080]
-window_manager = "$wm"
+window_manager = "$wm_cmd"
 TOML
 )
   if write_root "$server_toml" "$content"; then
-    log "Wrote $server_toml (backend=x11, session_geometry=[1920,1080], window_manager=\"$wm\")."
+    log "Wrote $server_toml (backend=x11, session_geometry=[1920,1080], window_manager=\"$wm_cmd\")."
     SERVER_WM_WARN="no"
   else
-    warn "Could not write $server_toml. Set window_manager = \"$wm\" manually to avoid a black screen."
+    warn "Could not write $server_toml. Set window_manager = \"$wm_cmd\" manually to avoid a black screen."
     SERVER_WM_WARN="yes"
   fi
 }
@@ -1064,6 +1093,54 @@ do_diagnose() {
     done
     echo
   fi
+
+  echo "== Black Screen Diagnostics =="
+  # 1. Check for Xvfb on PATH
+  if command -v Xvfb >/dev/null 2>&1; then
+    echo "  Xvfb: OK ($(command -v Xvfb))"
+  else
+    echo "  Xvfb: MISSING (X11 virtual framebuffer is required for headless server)"
+  fi
+
+  # 2. Check for Window Manager on PATH
+  local found_wm=""
+  for wm in openbox plasmashell xfce4-session i3 mwm twm fluxbox blackbox awesome startxfce4; do
+    if command -v "$wm" >/dev/null 2>&1; then
+      found_wm="$wm"
+      break
+    fi
+  done
+  if [[ -n "$found_wm" ]]; then
+    echo "  Window Manager: OK ($found_wm found)"
+  else
+    echo "  Window Manager: MISSING (Without a WM, the client screen will be black. Install openbox, xfce4 or another WM)"
+  fi
+
+  # 3. Check for python-xlib and mss
+  local py; py=$(find_python 2>/dev/null || echo "python3")
+  if "$py" -c "import mss" >/dev/null 2>&1; then
+    echo "  python-mss: OK"
+  else
+    echo "  python-mss: MISSING (Required for screen capture)"
+  fi
+  if "$py" -c "import Xlib" >/dev/null 2>&1; then
+    echo "  python-xlib: OK"
+  else
+    echo "  python-xlib: MISSING (Required for inputs and cursor)"
+  fi
+
+  # 4. Check for XDG_RUNTIME_DIR
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    if [[ -d "$XDG_RUNTIME_DIR" && -w "$XDG_RUNTIME_DIR" ]]; then
+      echo "  XDG_RUNTIME_DIR: OK ($XDG_RUNTIME_DIR is directory and writable)"
+    else
+      echo "  XDG_RUNTIME_DIR: WARNING ($XDG_RUNTIME_DIR is set but not writable or not a directory)"
+    fi
+  else
+    echo "  XDG_RUNTIME_DIR: WARNING (not set in environment)"
+  fi
+  echo
+
   echo "== Troubleshooting =="
   echo "  If a GUI fails to open with a Qt platform-plugin error, re-run with:"
   echo "    QT_DEBUG_PLUGINS=1 rd-server-gui   (or rd-client)"

@@ -152,3 +152,77 @@ def test_start_x11_all_candidates_lose_raises(monkeypatch):
     with pytest.raises(DisplayServerError) as exc:
         s._start_x11()
     assert "free" in str(exc.value).lower() or "Xvfb" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# Custom tests for Task 1, 3, 5, 6
+# --------------------------------------------------------------------------- #
+import os
+
+def test_xdg_runtime_dir_fallback(monkeypatch, tmp_path):
+    # If /run/user/<uid> is not writable, we should fall back to /tmp/rd-runtime-<uid>
+    # To test this, let's mock os.access to return False for /run/user/
+    original_access = os.access
+    def mock_access(path, mode):
+        if "/run/user" in str(path):
+            return False
+        return original_access(path, mode)
+    
+    monkeypatch.setattr(os, "access", mock_access)
+    
+    user = UserInfo("root")
+    assert user.runtime_dir == f"/tmp/rd-runtime-{user.uid}"
+    assert os.path.exists(user.runtime_dir)
+
+
+def test_maybe_start_wm_autodetect_candidates(monkeypatch):
+    s = _make_session("x11")
+    spawned = []
+    s._spawn = lambda cmd, env: spawned.append(cmd)
+    s._wait_for_window_or_timeout = lambda: None
+    
+    # Mock shutil.which to say 'openbox' is present, but others are not.
+    def mock_which(cmd):
+        if cmd == "openbox":
+            return "/usr/bin/openbox"
+        if cmd in ("tint2", "xterm", "xsetroot"):
+            return f"/usr/bin/{cmd}"
+        return None
+        
+    monkeypatch.setattr(session.shutil, "which", mock_which)
+    
+    env = {"DISPLAY": ":1"}
+    s._maybe_start_wm(env)
+    
+    # Since openbox is a bare WM, it should spawn openbox, tint2, xterm, and xsetroot
+    assert ["openbox"] in spawned
+    assert ["tint2"] in spawned
+    assert ["xterm"] in spawned
+    assert ["xsetroot", "-solid", "#2e3440"] in spawned
+
+
+def test_maybe_start_wm_no_wm_warning(monkeypatch, caplog):
+    import logging
+    s = _make_session("x11")
+    s._wait_for_window_or_timeout = lambda: None
+    
+    monkeypatch.setattr(session.shutil, "which", lambda _b: None)
+    
+    with caplog.at_level(logging.WARNING):
+        s._maybe_start_wm({})
+        
+    assert "сессия пуста, будет чёрный экран, задайте window_manager в server.toml" in caplog.text
+
+
+def test_backend_x11_raises_if_mss_not_available(monkeypatch):
+    from server.backend import x11
+    monkeypatch.setattr(x11, "_HAVE_MSS", False)
+    
+    # Creating an X11 backend or calling start should raise DisplayServerError
+    # Let's mock create_backend or instantiate X11Backend directly
+    from server.backend.x11 import X11Backend
+    backend = X11Backend(env={}, geometry=(320, 240), cursor_mode="normal")
+    
+    with pytest.raises(DisplayServerError) as exc:
+        backend._init_mss()
+    assert "не установлен пакет python-xlib/mss — захват экрана невозможен" in str(exc.value)
